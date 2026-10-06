@@ -19,13 +19,35 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "sqlite+aiosqlite:///./oneforall.db"
 
+    # Celery / Redis
+    CELERY_BROKER_URL: str = "redis://redis:6379/0"
+    CELERY_RESULT_BACKEND: str = "redis://redis:6379/1"
+    CELERY_PROCESS_JOB_TASK: str = "app.worker.tasks.process_job"
+    CELERY_DEFAULT_QUEUE: str = "convert"
+
+    # Cloudflare R2 Storage
+    R2_ACCOUNT_ID: str = ""
+    R2_ACCESS_KEY_ID: str = ""
+    R2_SECRET_ACCESS_KEY: str = ""
+    R2_BUCKET_NAME: str = "oneforall"
+    R2_ENDPOINT_URL: str = ""
+    R2_PUBLIC_BASE_URL: str = ""
+
+    @property
+    def r2_endpoint(self) -> str:
+        if self.R2_ENDPOINT_URL:
+            return self.R2_ENDPOINT_URL
+        if self.R2_ACCOUNT_ID:
+            return f"https://{self.R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+        return ""
+
     # CORS
     BACKEND_CORS_ORIGINS: list[str] = ["*"]
 
     # AI Model Settings
     BIREFNET_MODEL_NAME: str = "ZhengPeng7/BiRefNet"
     MODEL_DEVICE: str = "cuda"  # 'cuda', 'auto', or 'cpu'
-    PRELOAD_MODEL: bool = True  # Preload model into GPU on startup
+    PRELOAD_MODEL: bool = False  # Heavy model loading belongs to Celery workers.
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", case_sensitive=True, extra="ignore"

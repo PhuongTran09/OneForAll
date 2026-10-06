@@ -130,11 +130,41 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-### 4. Chạy ứng dụng (Development)
+### 4. Chạy ứng dụng nhanh (Quick Start)
 
-```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+Dự án đã tích hợp sẵn lệnh chạy trọn gói (FastAPI + Celery Worker + Celery Beat dọn dẹp file tự động):
+
+#### Cách 1: Chạy bằng 1 lệnh duy nhất (Khuyên dùng trên Windows)
+```cmd
+start.bat
 ```
+hoặc bằng PowerShell:
+```powershell
+.\start.ps1
+```
+hoặc bằng Python CLI trực tiếp:
+```bash
+python run.py
+```
+*(Script sẽ tự động khởi chạy FastAPI, Celery Worker và Celery Beat. Khi muốn dừng, chỉ cần nhấn `Ctrl + C` để dừng toàn bộ an toàn).*
+
+#### Cách 2: Chạy từng service riêng biệt
+```bash
+python run.py api        # Chỉ chạy FastAPI Web Server (Uvicorn)
+python run.py worker     # Chỉ chạy Celery Worker (tự động cấu hình solo pool trên Windows)
+python run.py beat       # Chỉ chạy Celery Beat (scheduler dọn dẹp file R2 hết hạn)
+python run.py test       # Chạy nhanh bộ test tự động (pytest)
+```
+
+#### Cách 3: Chạy toàn bộ hệ thống bằng Docker Compose
+```bash
+docker compose up --build
+# Hoặc: python run.py docker
+```
+
+---
+
+### 5. Tài liệu API (Interactive Docs)
 
 Truy cập tài liệu API tự động:
 - **Swagger UI**: [http://localhost:8000/api/v1/docs](http://localhost:8000/api/v1/docs)

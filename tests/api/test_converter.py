@@ -1,197 +1,234 @@
-import io
+from datetime import UTC
 
-import docx
-import openpyxl
 import pytest
 from httpx import AsyncClient
-from PIL import Image
+
+from app.core.security import create_access_token
 
 
-def _create_sample_png() -> bytes:
-    img = Image.new("RGBA", (50, 50), (255, 0, 0, 128))
-    bio = io.BytesIO()
-    img.save(bio, format="PNG")
-    return bio.getvalue()
-
-
-def _create_sample_jpg() -> bytes:
-    img = Image.new("RGB", (50, 50), (0, 128, 255))
-    bio = io.BytesIO()
-    img.save(bio, format="JPEG")
-    return bio.getvalue()
-
-
-def _create_sample_docx() -> bytes:
-    doc = docx.Document()
-    doc.add_heading("Tiêu đề thử nghiệm", level=1)
-    doc.add_paragraph("Nội dung tài liệu tiếng Việt có dấu: Kiểm tra chuyển đổi sang PDF.")
-    bio = io.BytesIO()
-    doc.save(bio)
-    return bio.getvalue()
-
-
-def _create_sample_xlsx() -> bytes:
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Employees"
-    ws.append(["id", "name", "role"])
-    ws.append([101, "Nguyễn Văn A", "Developer"])
-    ws.append([102, "Trần Thị B", "Designer"])
-    bio = io.BytesIO()
-    wb.save(bio)
-    return bio.getvalue()
-
-
-@pytest.mark.asyncio
-async def test_png_to_svg(client: AsyncClient):
-    png_bytes = _create_sample_png()
+async def _auth_headers(client: AsyncClient) -> dict[str, str]:
     response = await client.post(
-        "/api/v1/convert/png-to-svg",
-        files={"file": ("test.png", png_bytes, "image/png")},
-        data={"colormode": "color", "mode": "spline"},
-    )
-    assert response.status_code == 200
-    assert "image/svg+xml" in response.headers["content-type"]
-    assert b"<svg" in response.content or b"<?xml" in response.content
-
-
-@pytest.mark.asyncio
-async def test_doc_to_pdf(client: AsyncClient):
-    docx_bytes = _create_sample_docx()
-    response = await client.post(
-        "/api/v1/convert/doc-to-pdf",
-        files={
-            "file": (
-                "sample.docx",
-                docx_bytes,
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
+        "/api/v1/users",
+        json={
+            "email": "job-user@example.com",
+            "username": "jobuser",
+            "full_name": "Job User",
+            "password": "strongpassword123",
         },
     )
-    assert response.status_code == 200
-    assert "application/pdf" in response.headers["content-type"]
-    assert response.content.startswith(b"%PDF-")
+    user_id = response.json()["id"]
+    token = create_access_token(str(user_id))
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.mark.asyncio
-async def test_txt_to_pdf(client: AsyncClient):
-    txt_content = "Báo cáo tiến độ dự án OneForAll.\nTiếng Việt: Hà Nội, Đà Nẵng, TP. Hồ Chí Minh."
+async def test_create_convert_file_job(client: AsyncClient):
+    headers = await _auth_headers(client)
     response = await client.post(
-        "/api/v1/convert/txt-to-pdf",
-        files={"file": ("report.txt", txt_content.encode("utf-8"), "text/plain")},
-        data={"title": "Báo cáo OneForAll"},
-    )
-    assert response.status_code == 200
-    assert "application/pdf" in response.headers["content-type"]
-    assert response.content.startswith(b"%PDF-")
-
-
-@pytest.mark.asyncio
-async def test_txt_to_doc(client: AsyncClient):
-    txt_content = "Đoạn văn bản 1\nĐoạn văn bản 2"
-    response = await client.post(
-        "/api/v1/convert/txt-to-doc",
-        files={"file": ("notes.txt", txt_content.encode("utf-8"), "text/plain")},
-        data={"title": "Ghi chú"},
-    )
-    assert response.status_code == 200
-    assert (
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        in response.headers["content-type"]
-    )
-    assert response.content.startswith(b"PK")  # Zip / DOCX header
-
-
-@pytest.mark.asyncio
-async def test_xlsx_to_csv(client: AsyncClient):
-    xlsx_bytes = _create_sample_xlsx()
-    response = await client.post(
-        "/api/v1/convert/xlsx-to-csv",
-        files={
-            "file": (
-                "data.xlsx",
-                xlsx_bytes,
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+        "/api/v1/convert-file",
+        headers=headers,
+        data={
+            "input_key": "uploads/report.txt",
+            "from": "txt",
+            "to": "pdf",
+            "options": '{"title": "OneForAll Report"}',
         },
     )
-    assert response.status_code == 200
-    assert "text/csv" in response.headers["content-type"]
-    csv_text = response.content.decode("utf-8-sig")
-    assert "Nguyễn Văn A" in csv_text
-    assert "Designer" in csv_text
+
+    assert response.status_code == 202
+    data = response.json()
+    assert data["job_id"]
+    assert data["status"] == "queued"
 
 
 @pytest.mark.asyncio
-async def test_xlsx_to_json(client: AsyncClient):
-    xlsx_bytes = _create_sample_xlsx()
+async def test_create_convert_file_job_with_uploaded_file(client: AsyncClient):
+    headers = await _auth_headers(client)
     response = await client.post(
-        "/api/v1/convert/xlsx-to-json",
+        "/api/v1/convert-file",
+        headers=headers,
+        data={
+            "to": "svg",
+        },
         files={
-            "file": (
-                "data.xlsx",
-                xlsx_bytes,
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+            "file": ("sample.png", b"\x89PNG\r\n\x1a\nfakebytes", "image/png"),
         },
     )
+
+    assert response.status_code == 202
+    data = response.json()
+    assert data["job_id"]
+    assert data["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_create_image_job(client: AsyncClient):
+    headers = await _auth_headers(client)
+    response = await client.post(
+        "/api/v1/image/process",
+        headers=headers,
+        json={
+            "input_key": "uploads/image.png",
+            "operation": "compress",
+            "options": {"quality": 90},
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_get_job_status(client: AsyncClient):
+    headers = await _auth_headers(client)
+    create_response = await client.post(
+        "/api/v1/convert-file",
+        headers=headers,
+        data={
+            "input_key": "uploads/data.xlsx",
+            "from": "xlsx",
+            "to": "pdf",
+        },
+    )
+    job_id = create_response.json()["job_id"]
+
+    response = await client.get(f"/api/v1/jobs/{job_id}", headers=headers)
+
     assert response.status_code == 200
     data = response.json()
-    assert isinstance(data, list)
-    assert len(data) == 2
-    assert data[0]["name"] == "Nguyễn Văn A"
-    assert data[1]["role"] == "Designer"
+    assert data["id"] == job_id
+    assert data["type"] == "convert_file"
+    assert data["status"] == "queued"
+    assert data["progress"] == 0
+    assert data["input_key"] == "uploads/data.xlsx"
+    assert data["output_key"] is None
+    assert data["error"] is None
+    assert data["metadata"] == {
+        "from": "xlsx",
+        "to": "pdf",
+        "operation": "xlsx-to-pdf",
+        "options": {},
+    }
+    assert data["started_at"] is None
+    assert data["completed_at"] is None
 
 
 @pytest.mark.asyncio
-async def test_png_to_jpg(client: AsyncClient):
-    png_bytes = _create_sample_png()
+async def test_create_presigned_upload_url(client: AsyncClient):
+    headers = await _auth_headers(client)
     response = await client.post(
-        "/api/v1/convert/png-to-jpg",
-        files={"file": ("transparent.png", png_bytes, "image/png")},
-        data={"quality": 90, "bg_color": "#ffffff"},
+        "/api/v1/files/presigned-upload-url",
+        headers=headers,
+        json={
+            "key": "uploads/report.txt",
+            "content_type": "text/plain",
+            "expires_in": 900,
+        },
     )
+
     assert response.status_code == 200
-    assert "image/jpeg" in response.headers["content-type"]
-    assert response.content.startswith(b"\xff\xd8")  # JPEG header
+    data = response.json()
+    assert data["method"] == "PUT"
+    assert data["key"] == "uploads/report.txt"
 
 
 @pytest.mark.asyncio
-async def test_jpg_to_webp(client: AsyncClient):
-    jpg_bytes = _create_sample_jpg()
-    response = await client.post(
-        "/api/v1/convert/jpg-to-webp",
-        files={"file": ("photo.jpg", jpg_bytes, "image/jpeg")},
-        data={"quality": 85},
+async def test_download_job_result_file(client: AsyncClient):
+    headers = await _auth_headers(client)
+    # 1. Create a job
+    create_response = await client.post(
+        "/api/v1/convert-file",
+        headers=headers,
+        data={"input_key": "uploads/my.txt", "from": "txt", "to": "pdf"},
     )
-    assert response.status_code == 200
-    assert "image/webp" in response.headers["content-type"]
-    assert response.content.startswith(b"RIFF")
-    assert b"WEBP" in response.content[:16]
+    job_id = create_response.json()["job_id"]
+
+    # 2. Before completion -> 400
+    down_before = await client.get(f"/api/v1/files/{job_id}/download", headers=headers)
+    assert down_before.status_code == 400
+
+    # 3. Simulate completion in database
+    from datetime import datetime, timedelta
+
+    from app.repositories.job_repository import JobRepository
+    from tests.conftest import TestingSessionLocal as AsyncSessionLocal
+
+    async with AsyncSessionLocal() as session:
+        repo = JobRepository(session)
+        job = await repo.get(job_id)
+        assert job is not None
+        expires_at = datetime.now(UTC) + timedelta(minutes=20)
+        await repo.mark_completed(
+            job, output_key=f"outputs/{job_id}/result.pdf", expires_at=expires_at
+        )
+
+    # 4. Now download succeeds
+    down_after = await client.get(f"/api/v1/files/{job_id}/download", headers=headers)
+    assert down_after.status_code == 200
+    down_data = down_after.json()
+    assert down_data["key"] == f"outputs/{job_id}/result.pdf"
+    assert down_data["method"] == "GET"
+    assert "url" in down_data
 
 
 @pytest.mark.asyncio
-async def test_empty_file_error(client: AsyncClient):
-    response = await client.post(
-        "/api/v1/convert/png-to-svg",
-        files={"file": ("empty.png", b"", "image/png")},
-    )
-    assert response.status_code == 400
+async def test_anonymous_convert_file_lifecycle(client: AsyncClient):
+    from datetime import datetime, timedelta
 
+    from app.repositories.job_repository import JobRepository
+    from tests.conftest import TestingSessionLocal as AsyncSessionLocal
 
-@pytest.mark.asyncio
-async def test_txt_to_pdf_with_vietnamese_filename(client: AsyncClient):
-    txt_content = "Nội dung tài liệu với tên file tiếng Việt."
+    # 1. Anonymous create convert-file job (no Authorization header)
     response = await client.post(
-        "/api/v1/convert/txt-to-pdf",
-        files={"file": ("tài_liệu_phụ.txt", txt_content.encode("utf-8"), "text/plain")},
-        data={"title": "Tài liệu phụ"},
+        "/api/v1/convert-file",
+        data={"to": "svg"},
+        files={"file": ("test.png", b"\x89PNG\r\n\x1a\ntestdata", "image/png")},
     )
-    assert response.status_code == 200
-    assert "application/pdf" in response.headers["content-type"]
-    assert "content-disposition" in response.headers
-    # Check ASCII fallback and RFC 5987 encoded name in header
-    disposition = response.headers["content-disposition"]
-    assert 'filename="tai_lieu_phu.pdf"' in disposition
-    assert "filename*=UTF-8''" in disposition
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+    assert response.json()["status"] == "queued"
+
+    # 2. Anonymous check job status (no Authorization header)
+    job_res = await client.get(f"/api/v1/jobs/{job_id}")
+    assert job_res.status_code == 200
+    job_info = job_res.json()
+    assert job_info["id"] == job_id
+    assert job_info["user_id"] == "anonymous"
+    assert job_info["status"] == "queued"
+
+    # 3. Simulate Celery worker completing the job
+    async with AsyncSessionLocal() as session:
+        repo = JobRepository(session)
+        job = await repo.get(job_id)
+        assert job is not None
+        expires_at = datetime.now(UTC) + timedelta(minutes=20)
+        await repo.mark_completed(
+            job,
+            output_key=f"outputs/{job_id}/result.svg",
+            expires_at=expires_at,
+        )
+
+    # 4. Anonymous download result (no Authorization header)
+    download_res = await client.get(f"/api/v1/files/{job_id}/download")
+    assert download_res.status_code == 200
+    download_data = download_res.json()
+    assert download_data["key"] == f"outputs/{job_id}/result.svg"
+    assert "url" in download_data
+
+    # 4.1 Direct binary download without redirect (?direct=true)
+    direct_res = await client.get(f"/api/v1/files/{job_id}/download?direct=true")
+    assert direct_res.status_code == 200
+    assert 'attachment; filename="result.svg"' in direct_res.headers.get("content-disposition", "")
+    assert direct_res.content == b"fake-file-content" or len(direct_res.content) > 0
+
+    # 5. Simulate expiration
+    async with AsyncSessionLocal() as session:
+        repo = JobRepository(session)
+        job = await repo.get(job_id)
+        assert job is not None
+        job.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+        await session.commit()
+
+    expired_res = await client.get(f"/api/v1/files/{job_id}/download")
+    assert expired_res.status_code == 410
 

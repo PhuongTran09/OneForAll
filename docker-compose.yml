@@ -1,5 +1,23 @@
 version: "3.9"
 
+x-worker-base: &worker-base
+  build: .
+  volumes:
+    - .:/app
+  environment:
+    - APP_NAME=OneForAll
+    - APP_ENV=development
+    - DEBUG=True
+    - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/oneforall_db
+    - SECRET_KEY=dev-secret-key-change-in-production-123456789
+    - CELERY_BROKER_URL=redis://redis:6379/0
+    - CELERY_RESULT_BACKEND=redis://redis:6379/1
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_started
+
 services:
   web:
     build: .
@@ -15,9 +33,67 @@ services:
       - DEBUG=True
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/oneforall_db
       - SECRET_KEY=dev-secret-key-change-in-production-123456789
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
+
+  # 1. Convert Worker: LibreOffice & VTracer (CPU/Memory bound)
+  worker_convert:
+    <<: *worker-base
+    container_name: oneforall_worker_convert
+    command: celery -A app.workers worker -Q convert -n worker_convert@%h --loglevel=INFO --concurrency=2
+
+  # 2. Image Worker: Pillow operations (I/O & CPU light, high concurrency)
+  worker_image:
+    <<: *worker-base
+    container_name: oneforall_worker_image
+    command: celery -A app.workers worker -Q image -n worker_image@%h --loglevel=INFO --concurrency=4
+
+  # 3. Video Worker: FFmpeg & yt-dlp (CPU & Disk I/O intensive)
+  worker_video:
+    <<: *worker-base
+    container_name: oneforall_worker_video
+    command: celery -A app.workers worker -Q video -n worker_video@%h --loglevel=INFO --concurrency=1
+
+  # 4. GPU Worker: BiRefNet background removal & AI models (VRAM intensive)
+  worker_gpu:
+    <<: *worker-base
+    container_name: oneforall_worker_gpu
+    command: celery -A app.workers worker -Q gpu -n worker_gpu@%h --loglevel=INFO --concurrency=1 -P solo
+    environment:
+      - APP_NAME=OneForAll
+      - APP_ENV=development
+      - DEBUG=True
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/oneforall_db
+      - SECRET_KEY=dev-secret-key-change-in-production-123456789
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - MODEL_DEVICE=cuda
+    # Uncomment when NVIDIA Container Toolkit is enabled on the host:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # 5. Beat Worker: Scheduled tasks (e.g., cleanup expired files every 1 min)
+  beat:
+    <<: *worker-base
+    container_name: oneforall_beat
+    command: celery -A app.workers beat --loglevel=INFO
+
+  redis:
+    image: redis:7-alpine
+    container_name: oneforall_redis
+    restart: always
+    ports:
+      - "6379:6379"
 
   db:
     image: postgres:16-alpine
