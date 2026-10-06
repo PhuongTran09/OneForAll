@@ -1,6 +1,6 @@
 # OneForAll - FastAPI Backend Service & BiRefNet AI Background Removal
 
-Kiến trúc backend hiện đại, mở rộng được (clean layered architecture) dựa trên **FastAPI**, **SQLAlchemy 2.0 (Async)**, **Alembic**, **Pydantic v2**, và hệ thống tách nền AI **BiRefNet-Lite**.
+Kiến trúc backend hiện đại, mở rộng được (clean layered architecture) dựa trên **FastAPI**, **SQLAlchemy 2.0 (Async)**, **Alembic**, **Pydantic v2**, và hệ thống tách nền AI **BiRefNet**.
 
 ---
 
