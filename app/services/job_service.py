@@ -1,4 +1,4 @@
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Any
 
 from app.models.job import Job
 from app.models.user import User
@@ -9,20 +9,22 @@ from app.services.task_queue_service import task_queue_service
 
 
 class JobService:
+    def __init__(self, repository: JobRepository | None = None):
+        self.repository = repository or JobRepository()
+
     async def create_and_enqueue(
         self,
         *,
-        session: AsyncSession,
+        session: Any = None,
         user: User | None = None,
         payload: JobCreate,
     ) -> Job:
         if user is not None:
             await subscription_service.ensure_can_create_job(user, payload.type)
 
-        repo = JobRepository(session)
-        job = await repo.create(
+        job = await self.repository.create(
             job_id=payload.id,
-            user_id=payload.user_id,
+            user_id=str(payload.user_id),
             type=payload.type,
             input_key=payload.input_key,
             metadata=payload.metadata,
@@ -36,15 +38,18 @@ class JobService:
         return job
 
     async def get_for_user(
-        self, *, session: AsyncSession, user: User | None = None, job_id: str
+        self,
+        *,
+        session: Any = None,
+        user: User | None = None,
+        job_id: str,
     ) -> Job | None:
-        repo = JobRepository(session)
-        job = await repo.get(job_id)
+        job = await self.repository.get(job_id)
         if not job:
             return None
         if job.user_id == "anonymous":
             return job
-        if user and job.user_id == str(user.id):
+        if user and (job.user_id == str(user.id) or getattr(user, "is_superuser", False)):
             return job
         return None
 

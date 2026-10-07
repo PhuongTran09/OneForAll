@@ -1,24 +1,170 @@
 import asyncio
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
+from typing import Any
+from uuid import uuid4
 
+import jwt
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core.database import Base, get_db
+from app.core.config import settings
 from app.main import app
 
-# In-memory SQLite for testing
-TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+# In-memory database storage for Supabase tests
+_fake_db: dict[str, list[dict[str, Any]]] = {
+    "profiles": [],
+    "jobs": [],
+}
+_fake_storage: dict[str, bytes] = {}
 
-engine_test = create_async_engine(TEST_DATABASE_URL, echo=False)
-TestingSessionLocal = async_sessionmaker(
-    bind=engine_test,
-    class_=AsyncSession,
-    expire_on_commit=False,
-    autocommit=False,
-    autoflush=False,
-)
+TEST_JWT_SECRET = "test-secret-key-12345678901234567890"
+settings.SUPABASE_JWT_SECRET = TEST_JWT_SECRET
+
+
+def create_test_supabase_token(
+    user_id: str | None = None,
+    email: str = "test@example.com",
+    username: str = "testuser",
+    full_name: str = "Test User",
+    is_superuser: bool = False,
+) -> str:
+    """Generates a valid Supabase JWT for testing."""
+    uid = user_id or str(uuid4())
+    payload = {
+        "sub": uid,
+        "aud": "authenticated",
+        "role": "authenticated",
+        "email": email,
+        "user_metadata": {
+            "username": username,
+            "full_name": full_name,
+        },
+        "app_metadata": {
+            "is_superuser": is_superuser,
+            "provider": "email",
+        },
+        "exp": int(datetime.now(UTC).timestamp()) + 3600,
+    }
+    return jwt.encode(payload, TEST_JWT_SECRET, algorithm="HS256")
+
+
+class MockResponse:
+    def __init__(self, data: Any):
+        self.data = data
+
+
+class MockTableQuery:
+    def __init__(self, table_name: str):
+        self.table_name = table_name
+        self.action = "select"
+        self.insert_data: Any = None
+        self.update_data: dict[str, Any] | None = None
+        self.filters: list[tuple[str, str, Any]] = []  # (op, col, val)
+        self.range_val: tuple[int, int] | None = None
+
+    def select(self, fields: str = "*"):
+        self.action = "select"
+        return self
+
+    def insert(self, data: Any):
+        self.action = "insert"
+        self.insert_data = data
+        return self
+
+    def update(self, data: dict[str, Any]):
+        self.action = "update"
+        self.update_data = data
+        return self
+
+    def delete(self):
+        self.action = "delete"
+        return self
+
+    def eq(self, col: str, val: Any):
+        self.filters.append(("eq", col, val))
+        return self
+
+    def lte(self, col: str, val: Any):
+        self.filters.append(("lte", col, val))
+        return self
+
+    def range(self, start: int, end: int):
+        self.range_val = (start, end)
+        return self
+
+    def _matches_filters(self, row: dict[str, Any]) -> bool:
+        for op, col, val in self.filters:
+            row_val = row.get(col)
+            if op == "eq":
+                if str(row_val) != str(val):
+                    return False
+            elif op == "lte" and (row_val is None or str(row_val) > str(val)):
+                return False
+        return True
+
+    async def execute(self) -> MockResponse:
+        table_rows = _fake_db.setdefault(self.table_name, [])
+
+        if self.action == "insert":
+            items = (
+                self.insert_data
+                if isinstance(self.insert_data, list)
+                else [self.insert_data]
+            )
+            inserted = []
+            for item in items:
+                row = dict(item)
+                table_rows.append(row)
+                inserted.append(row)
+            return MockResponse(inserted)
+
+        if self.action == "update":
+            updated = []
+            for row in table_rows:
+                if self._matches_filters(row):
+                    row.update(self.update_data or {})
+                    updated.append(dict(row))
+            return MockResponse(updated)
+
+        if self.action == "delete":
+            to_keep = [r for r in table_rows if not self._matches_filters(r)]
+            _fake_db[self.table_name] = to_keep
+            return MockResponse([])
+
+        # Default select
+        matched = [dict(r) for r in table_rows if self._matches_filters(r)]
+        if self.range_val:
+            s, e = self.range_val
+            matched = matched[s : e + 1]
+        return MockResponse(matched)
+
+
+class MockAuth:
+    async def get_user(self, token: str):
+        try:
+            payload = jwt.decode(token, TEST_JWT_SECRET, algorithms=["HS256"], options={"verify_aud": False})
+            class MockSupabaseUser:
+                id = payload.get("sub")
+                email = payload.get("email")
+                user_metadata = payload.get("user_metadata", {})
+                app_metadata = payload.get("app_metadata", {})
+            class UserResp:
+                user = MockSupabaseUser()
+            return UserResp()
+        except Exception:  # noqa: BLE001
+            return None
+
+
+class MockAsyncSupabaseClient:
+    def __init__(self):
+        self.auth = MockAuth()
+
+    def table(self, table_name: str) -> MockTableQuery:
+        return MockTableQuery(table_name)
+
+
+_mock_client_instance = MockAsyncSupabaseClient()
 
 
 @pytest.fixture(scope="session")
@@ -28,12 +174,11 @@ def event_loop():
     loop.close()
 
 
-_fake_storage: dict[str, bytes] = {}
-
-
 @pytest.fixture(autouse=True)
 def mock_external_services(monkeypatch):
     _fake_storage.clear()
+    _fake_db["profiles"] = []
+    _fake_db["jobs"] = []
 
     def fake_upload(*, data, key, **kwargs):
         _fake_storage[key] = data
@@ -43,6 +188,9 @@ def mock_external_services(monkeypatch):
         if key in _fake_storage:
             return _fake_storage[key]
         return b"fake-file-content"
+
+    def fake_download_stream(*, key, **kwargs):
+        yield fake_download(key=key)
 
     def fake_delete(*, key, **kwargs):
         _fake_storage.pop(key, None)
@@ -61,34 +209,34 @@ def mock_external_services(monkeypatch):
         fake_download,
     )
     monkeypatch.setattr(
+        "app.services.storage_service.storage_service.download_stream",
+        fake_download_stream,
+    )
+    monkeypatch.setattr(
         "app.services.storage_service.storage_service.delete_file",
         fake_delete,
     )
+
+    # Supabase Client mocks
+    import app.core.supabase as supabase_module
+
+    supabase_module._async_client = _mock_client_instance
+    supabase_module._sync_client = _mock_client_instance
+
+    async def get_mock_async_client():
+        return _mock_client_instance
+
+    def get_mock_sync_client():
+        return _mock_client_instance
+
     monkeypatch.setattr(
-        "app.worker.tasks.convert.AsyncSessionLocal",
-        TestingSessionLocal,
+        "app.core.supabase.get_async_supabase_client",
+        get_mock_async_client,
     )
     monkeypatch.setattr(
-        "app.worker.tasks.cleanup.AsyncSessionLocal",
-        TestingSessionLocal,
+        "app.core.supabase.get_sync_supabase_client",
+        get_mock_sync_client,
     )
-
-
-@pytest.fixture(autouse=True)
-async def prepare_database():
-    async with engine_test.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield
-    async with engine_test.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-
-
-async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
-    async with TestingSessionLocal() as session:
-        yield session
-
-
-app.dependency_overrides[get_db] = override_get_db
 
 
 @pytest.fixture

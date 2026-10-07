@@ -1,63 +1,58 @@
+from uuid import uuid4
+
 import pytest
 from httpx import AsyncClient
 
-
-@pytest.mark.asyncio
-async def test_auth_login_success(client: AsyncClient):
-    # 1. Create a user
-    await client.post(
-        "/api/v1/users",
-        json={
-            "email": "authuser@example.com",
-            "username": "authuser",
-            "full_name": "Auth User",
-            "password": "mypassword123",
-        },
-    )
-
-    # 2. Login via username
-    login_response = await client.post(
-        "/api/v1/auth/login",
-        data={
-            "username": "authuser",
-            "password": "mypassword123",
-        },
-    )
-    assert login_response.status_code == 200
-    token_data = login_response.json()
-    assert "access_token" in token_data
-    assert token_data["token_type"] == "bearer"
-
-    # 3. Login via email in username field
-    login_email_response = await client.post(
-        "/api/v1/auth/login",
-        data={
-            "username": "authuser@example.com",
-            "password": "mypassword123",
-        },
-    )
-    assert login_email_response.status_code == 200
-    assert "access_token" in login_email_response.json()
+from tests.conftest import create_test_supabase_token
 
 
 @pytest.mark.asyncio
-async def test_auth_login_invalid_password(client: AsyncClient):
-    await client.post(
-        "/api/v1/users",
-        json={
-            "email": "wrongpass@example.com",
-            "username": "wrongpass",
-            "full_name": "Wrong Pass",
-            "password": "correctpassword",
-        },
-    )
+async def test_supabase_auth_success(client: AsyncClient):
+    uid = str(uuid4())
+    token = create_test_supabase_token(user_id=uid, email="user@supabase.test", username="supabaseuser")
+    headers = {"Authorization": f"Bearer {token}"}
 
+    response = await client.get("/api/v1/users/me", headers=headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == uid
+    assert data["email"] == "user@supabase.test"
+    assert data["username"] == "supabaseuser"
+
+
+@pytest.mark.asyncio
+async def test_supabase_auth_missing_token(client: AsyncClient):
+    response = await client.get("/api/v1/users/me")
+    assert response.status_code == 401
+    assert "Not authenticated" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_supabase_auth_invalid_token(client: AsyncClient):
+    headers = {"Authorization": "Bearer invalid.fake.token"}
+    response = await client.get("/api/v1/users/me", headers=headers)
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_legacy_auth_login_removed(client: AsyncClient):
+    # Verifies custom /auth/login route has been removed
     response = await client.post(
         "/api/v1/auth/login",
-        data={
-            "username": "wrongpass",
-            "password": "badpassword",
-        },
+        data={"username": "testuser", "password": "password"},
     )
-    assert response.status_code == 400
-    assert response.json()["detail"] == "Incorrect username or password"
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_superuser_protection(client: AsyncClient):
+    normal_token = create_test_supabase_token(is_superuser=False)
+    admin_token = create_test_supabase_token(is_superuser=True)
+
+    # Normal user is blocked
+    res_normal = await client.get("/api/v1/users", headers={"Authorization": f"Bearer {normal_token}"})
+    assert res_normal.status_code == 403
+
+    # Superuser is allowed
+    res_admin = await client.get("/api/v1/users", headers={"Authorization": f"Bearer {admin_token}"})
+    assert res_admin.status_code == 200

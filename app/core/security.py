@@ -1,36 +1,39 @@
-from datetime import datetime, timedelta, timezone
+"""Security module for Supabase JWT verification.
+
+Custom password hashing, bcrypt, and custom access tokens have been removed
+in favor of Supabase Auth.
+"""
+
 from typing import Any
 
-import bcrypt
-from jose import jwt
+import jwt
 
 from app.core.config import settings
+from app.core.exceptions import UnauthorizedException
 
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    password_bytes = plain_password.encode("utf-8")[:72]
-    hashed_bytes = hashed_password.encode("utf-8")
-    return bcrypt.checkpw(password_bytes, hashed_bytes)
+def verify_supabase_jwt(token: str) -> dict[str, Any]:
+    """Verify Supabase JWT token and extract payload claims (including sub=user_id)."""
+    if not token:
+        raise UnauthorizedException(detail="Token is required")
 
+    # 1. If SUPABASE_JWT_SECRET is configured, verify HMAC signature
+    if settings.SUPABASE_JWT_SECRET:
+        try:
+            return jwt.decode(
+                token,
+                settings.SUPABASE_JWT_SECRET,
+                algorithms=["HS256"],
+                options={"verify_aud": False},
+            )
+        except jwt.PyJWTError as exc:
+            raise UnauthorizedException(detail=f"Invalid or expired Supabase JWT: {exc!s}") from exc
 
-def get_password_hash(password: str) -> str:
-    password_bytes = password.encode("utf-8")[:72]
-    salt = bcrypt.gensalt()
-    return bcrypt.hashpw(password_bytes, salt).decode("utf-8")
-
-
-def create_access_token(
-    subject: str | Any, expires_delta: timedelta | None = None
-) -> str:
-    if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
-    else:
-        expire = datetime.now(timezone.utc) + timedelta(
-            minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
+    # 2. Decode claims without signature verification if secret is not set (e.g. dev/local mode)
+    try:
+        return jwt.decode(
+            token,
+            options={"verify_signature": False, "verify_aud": False},
         )
-
-    to_encode = {"exp": expire, "sub": str(subject)}
-    encoded_jwt = jwt.encode(
-        to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM
-    )
-    return encoded_jwt
+    except Exception as exc:
+        raise UnauthorizedException(detail=f"Unable to parse token: {exc!s}") from exc

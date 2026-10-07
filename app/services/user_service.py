@@ -1,18 +1,22 @@
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Any
+from uuid import uuid4
 
 from app.core.exceptions import BadRequestException, NotFoundException
-from app.core.security import get_password_hash
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
 from app.schemas.user import UserCreate, UserUpdate
 
 
 class UserService:
-    def __init__(self, session: AsyncSession):
-        self.repository = UserRepository(session)
+    def __init__(
+        self,
+        repository: UserRepository | None = None,
+        session: Any = None,
+    ):
+        self.repository = repository or UserRepository()
 
-    async def get_user_by_id(self, user_id: int) -> User:
-        user = await self.repository.get_by_id(user_id)
+    async def get_user_by_id(self, user_id: str) -> User:
+        user = await self.repository.get_by_id(str(user_id))
         if not user:
             raise NotFoundException(detail=f"User with ID {user_id} not found")
         return user
@@ -21,24 +25,27 @@ class UserService:
         return await self.repository.get_all(skip=skip, limit=limit)
 
     async def create_user(self, user_in: UserCreate) -> User:
-        existing_email = await self.repository.get_by_email(user_in.email)
-        if existing_email:
-            raise BadRequestException(detail="Email already registered")
+        if user_in.email:
+            existing_email = await self.repository.get_by_email(user_in.email)
+            if existing_email:
+                raise BadRequestException(detail="Email already registered")
 
         existing_username = await self.repository.get_by_username(user_in.username)
         if existing_username:
             raise BadRequestException(detail="Username already taken")
 
+        uid = user_in.id or str(uuid4())
         user = User(
+            id=uid,
             email=user_in.email,
             username=user_in.username,
             full_name=user_in.full_name,
-            hashed_password=get_password_hash(user_in.password),
             is_active=user_in.is_active if user_in.is_active is not None else True,
+            is_superuser=user_in.is_superuser if user_in.is_superuser is not None else False,
         )
         return await self.repository.create(user)
 
-    async def update_user(self, user_id: int, user_in: UserUpdate) -> User:
+    async def update_user(self, user_id: str, user_in: UserUpdate) -> User:
         user = await self.get_user_by_id(user_id)
 
         if user_in.email and user_in.email != user.email:
@@ -56,14 +63,17 @@ class UserService:
         if user_in.full_name is not None:
             user.full_name = user_in.full_name
 
-        if user_in.password is not None:
-            user.hashed_password = get_password_hash(user_in.password)
-
         if user_in.is_active is not None:
             user.is_active = user_in.is_active
 
-        return await self.repository.update(user)
+        if user_in.is_superuser is not None:
+            user.is_superuser = user_in.is_superuser
 
-    async def delete_user(self, user_id: int) -> None:
+        return await self.repository.update_user(user)
+
+    async def delete_user(self, user_id: str) -> None:
         user = await self.get_user_by_id(user_id)
-        await self.repository.delete(user)
+        await self.repository.delete_user(user.id)
+
+
+user_service = UserService()

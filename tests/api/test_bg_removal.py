@@ -1,26 +1,21 @@
 import pytest
 from httpx import AsyncClient
 
-from app.core.security import create_access_token
+from tests.conftest import create_test_supabase_token
 
 
-async def _auth_headers(client: AsyncClient) -> dict[str, str]:
-    response = await client.post(
-        "/api/v1/users",
-        json={
-            "email": "image-user@example.com",
-            "username": "imageuser",
-            "full_name": "Image User",
-            "password": "strongpassword123",
-        },
+def _auth_headers() -> dict[str, str]:
+    token = create_test_supabase_token(
+        email="image-user@example.com",
+        username="imageuser",
+        full_name="Image User",
     )
-    token = create_access_token(str(response.json()["id"]))
     return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.mark.asyncio
 async def test_remove_background_is_created_as_image_job(client: AsyncClient):
-    headers = await _auth_headers(client)
+    headers = _auth_headers()
     response = await client.post(
         "/api/v1/image/process",
         headers=headers,

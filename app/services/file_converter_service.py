@@ -233,10 +233,7 @@ class FileConverterService:
         font_face = ""
         if self._font_path:
             font_family = "'AppCustomFont', sans-serif"
-            font_face = (
-                "@font-face { font-family: 'AppCustomFont'; "
-                f"src: url('{self._font_path}'); }}"
-            )
+            font_face = f"@font-face {{ font-family: 'AppCustomFont'; src: url('{self._font_path}'); }}"
         return _CSS_TEMPLATE.substitute(font_face=font_face, font_family=font_family)
 
     def _build_html_wrapper(self, body_content: str, title: str = "Tài liệu") -> str:

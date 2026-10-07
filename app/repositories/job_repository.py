@@ -1,14 +1,20 @@
 from datetime import UTC, datetime
+from typing import Any
+from uuid import uuid4
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
+import app.core.supabase as supabase_core
 from app.models.job import Job, JobStatus
+from supabase import AsyncClient
 
 
 class JobRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
+    def __init__(self, client: AsyncClient | None = None, session: Any = None):
+        self._client = client
+
+    async def _get_client(self) -> AsyncClient:
+        if self._client is not None:
+            return self._client
+        return await supabase_core.get_async_supabase_client()
 
     async def create(
         self,
@@ -16,102 +22,132 @@ class JobRepository:
         job_id: str | None = None,
         user_id: str,
         type: str,
-        input_key: str | None,
-        metadata: dict,
+        input_key: str | None = None,
+        metadata: dict | None = None,
     ) -> Job:
-        job_kwargs: dict = {
-            "user_id": user_id,
+        client = await self._get_client()
+        jid = job_id or str(uuid4())
+        job_data = {
+            "id": jid,
+            "user_id": str(user_id),
             "type": type,
-            "input_key": input_key,
-            "job_metadata": metadata,
             "status": JobStatus.QUEUED.value,
             "progress": 0,
+            "input_key": input_key,
+            "metadata": metadata or {},
+            "created_at": datetime.now(UTC).isoformat(),
         }
-        if job_id:
-            job_kwargs["id"] = job_id
-
-        job = Job(**job_kwargs)
-        self.session.add(job)
-        await self.session.commit()
-        await self.session.refresh(job)
-        return job
+        res = await client.table("jobs").insert(job_data).execute()
+        data = res.data[0] if res.data else job_data
+        return Job.model_validate(data)
 
     async def get_for_user(self, job_id: str, user_id: str) -> Job | None:
-        result = await self.session.execute(
-            select(Job).where(Job.id == job_id, Job.user_id == user_id)
+        client = await self._get_client()
+        res = (
+            await client.table("jobs")
+            .select("*")
+            .eq("id", job_id)
+            .eq("user_id", str(user_id))
+            .execute()
         )
-        return result.scalar_one_or_none()
+        if not res.data:
+            return None
+        return Job.model_validate(res.data[0])
 
     async def get(self, job_id: str) -> Job | None:
-        result = await self.session.execute(select(Job).where(Job.id == job_id))
-        return result.scalar_one_or_none()
+        client = await self._get_client()
+        res = await client.table("jobs").select("*").eq("id", job_id).execute()
+        if not res.data:
+            return None
+        return Job.model_validate(res.data[0])
 
     async def mark_processing(self, job: Job) -> Job:
-        job.status = JobStatus.PROCESSING.value
-        job.started_at = datetime.now(UTC)
-        job.progress = max(job.progress, 1)
-        await self.session.commit()
-        await self.session.refresh(job)
-        return job
+        client = await self._get_client()
+        started_at = datetime.now(UTC).isoformat()
+        updates = {
+            "status": JobStatus.PROCESSING.value,
+            "started_at": started_at,
+            "progress": max(job.progress, 1),
+        }
+        res = await client.table("jobs").update(updates).eq("id", job.id).execute()
+        data = res.data[0] if res.data else {**job.model_dump(), **updates}
+        return Job.model_validate(data)
 
     async def update_progress(self, job: Job, progress: int) -> Job:
-        job.progress = max(0, min(100, progress))
-        await self.session.commit()
-        await self.session.refresh(job)
-        return job
+        client = await self._get_client()
+        updates = {"progress": max(0, min(100, progress))}
+        res = await client.table("jobs").update(updates).eq("id", job.id).execute()
+        data = res.data[0] if res.data else {**job.model_dump(), **updates}
+        return Job.model_validate(data)
 
     async def mark_completed(
         self, job: Job, output_key: str | None, expires_at: datetime | None = None
     ) -> Job:
-        job.status = JobStatus.COMPLETED.value
-        job.progress = 100
-        job.output_key = output_key
-        job.completed_at = datetime.now(UTC)
+        client = await self._get_client()
+        completed_at = datetime.now(UTC).isoformat()
+        updates = {
+            "status": JobStatus.COMPLETED.value,
+            "progress": 100,
+            "output_key": output_key,
+            "completed_at": completed_at,
+        }
         if expires_at is not None:
-            job.expires_at = expires_at
-        await self.session.commit()
-        await self.session.refresh(job)
-        return job
+            updates["expires_at"] = (
+                expires_at.isoformat()
+                if isinstance(expires_at, datetime)
+                else str(expires_at)
+            )
+        res = await client.table("jobs").update(updates).eq("id", job.id).execute()
+        data = res.data[0] if res.data else {**job.model_dump(), **updates}
+        return Job.model_validate(data)
 
     async def mark_failed(self, job: Job, error: str) -> Job:
-        job.status = JobStatus.FAILED.value
-        job.error = error
-        job.completed_at = datetime.now(UTC)
-        await self.session.commit()
-        await self.session.refresh(job)
-        return job
+        client = await self._get_client()
+        updates = {
+            "status": JobStatus.FAILED.value,
+            "error": error,
+            "completed_at": datetime.now(UTC).isoformat(),
+        }
+        res = await client.table("jobs").update(updates).eq("id", job.id).execute()
+        data = res.data[0] if res.data else {**job.model_dump(), **updates}
+        return Job.model_validate(data)
 
     async def mark_cancelled(self, job: Job) -> Job:
-        job.status = JobStatus.CANCELLED.value
-        job.completed_at = datetime.now(UTC)
-        await self.session.commit()
-        await self.session.refresh(job)
-        return job
+        client = await self._get_client()
+        updates = {
+            "status": JobStatus.CANCELLED.value,
+            "completed_at": datetime.now(UTC).isoformat(),
+        }
+        res = await client.table("jobs").update(updates).eq("id", job.id).execute()
+        data = res.data[0] if res.data else {**job.model_dump(), **updates}
+        return Job.model_validate(data)
 
     async def mark_expired(self, job: Job) -> Job:
-        job.status = JobStatus.EXPIRED.value
-        await self.session.commit()
-        await self.session.refresh(job)
-        return job
+        client = await self._get_client()
+        updates = {"status": JobStatus.EXPIRED.value}
+        res = await client.table("jobs").update(updates).eq("id", job.id).execute()
+        data = res.data[0] if res.data else {**job.model_dump(), **updates}
+        return Job.model_validate(data)
 
     async def get_expired_jobs(self, now: datetime) -> list[Job]:
-        """Lấy tất cả các job completed mà thời gian expires_at <= now."""
-        result = await self.session.execute(
-            select(Job).where(
-                Job.status == JobStatus.COMPLETED.value,
-                Job.expires_at.is_not(None),
-            )
+        """Fetch all completed jobs whose expires_at is earlier than or equal to now."""
+        client = await self._get_client()
+        res = (
+            await client.table("jobs")
+            .select("*")
+            .eq("status", JobStatus.COMPLETED.value)
+            .execute()
         )
-        all_jobs = list(result.scalars().all())
         now_utc = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
         expired: list[Job] = []
-        for j in all_jobs:
-            if j.expires_at:
+        for item in res.data or []:
+            job = Job.model_validate(item)
+            if job.expires_at:
                 exp = (
-                    j.expires_at
-                    if j.expires_at.tzinfo is not None
-                    else j.expires_at.replace(tzinfo=UTC)
+                    job.expires_at
+                    if job.expires_at.tzinfo is not None
+                    else job.expires_at.replace(tzinfo=UTC)
                 )
                 if exp <= now_utc:
-                    expired.append(j)
+                    expired.append(job)
         return expired

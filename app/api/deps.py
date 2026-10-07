@@ -1,46 +1,65 @@
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import Depends
-from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import Depends, Header
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.core.config import settings
-from app.core.database import get_db
-from app.core.exceptions import UnauthorizedException
+from app.core.exceptions import ForbiddenException, UnauthorizedException
+from app.core.security import verify_supabase_jwt
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
-from app.schemas.user import TokenPayload
 
-reusable_oauth2 = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_PREFIX}/auth/login")
-reusable_oauth2_optional = OAuth2PasswordBearer(
-    tokenUrl=f"{settings.API_V1_PREFIX}/auth/login", auto_error=False
-)
+# HTTPBearer scheme for OpenAPI Docs / Swagger
+security_bearer = HTTPBearer(auto_error=False)
 
-SessionDep = Annotated[AsyncSession, Depends(get_db)]
-TokenDep = Annotated[str, Depends(reusable_oauth2)]
-OptionalTokenDep = Annotated[str | None, Depends(reusable_oauth2_optional)]
+
+async def get_token_from_header(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security_bearer),
+    authorization: str | None = Header(default=None),
+) -> str | None:
+    if credentials and credentials.credentials:
+        return credentials.credentials
+    if authorization and authorization.startswith("Bearer "):
+        return authorization[7:].strip()
+    return None
 
 
 async def get_current_user(
-    session: SessionDep,
-    token: TokenDep,
+    token: str | None = Depends(get_token_from_header),
 ) -> User:
-    try:
-        payload = jwt.decode(
-            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
-        )
-        token_data = TokenPayload(**payload)
-    except JWTError:
-        raise UnauthorizedException(detail="Could not validate credentials")
+    """Verifies Supabase JWT and retrieves current User profile."""
+    if not token:
+        raise UnauthorizedException(detail="Not authenticated")
 
-    if not token_data.sub:
-        raise UnauthorizedException(detail="Token missing subject")
+    payload = verify_supabase_jwt(token)
+    user_id = payload.get("sub")
+    if not user_id:
+        raise UnauthorizedException(detail="Token missing subject (user_id)")
 
-    user_repo = UserRepository(session)
-    user = await user_repo.get_by_id(int(token_data.sub))
+    repo = UserRepository()
+    user = await repo.get_by_id(str(user_id))
     if not user:
-        raise UnauthorizedException(detail="User not found")
+        # Auto-provision profile linked to auth.users.id
+        email = payload.get("email")
+        metadata = payload.get("user_metadata", {})
+        username = (
+            metadata.get("username")
+            or (email.split("@")[0] if email else f"user_{str(user_id)[:8]}")
+        )
+        full_name = metadata.get("full_name") or metadata.get("name")
+        is_superuser = bool(
+            payload.get("app_metadata", {}).get("is_superuser", False)
+            or payload.get("role") == "service_role"
+        )
+        user = User(
+            id=str(user_id),
+            email=email,
+            username=username,
+            full_name=full_name,
+            is_active=True,
+            is_superuser=is_superuser,
+        )
+        user = await repo.create(user)
+
     if not user.is_active:
         raise UnauthorizedException(detail="Inactive user")
 
@@ -48,26 +67,33 @@ async def get_current_user(
 
 
 async def get_current_user_optional(
-    session: SessionDep,
-    token: OptionalTokenDep,
+    token: str | None = Depends(get_token_from_header),
 ) -> User | None:
+    """Optional auth dependency: returns User if valid token present, else None."""
     if not token:
         return None
     try:
-        payload = jwt.decode(
-            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
-        )
-        token_data = TokenPayload(**payload)
-        if not token_data.sub:
-            return None
-        user_repo = UserRepository(session)
-        user = await user_repo.get_by_id(int(token_data.sub))
-        if user and user.is_active:
-            return user
+        return await get_current_user(token)
     except Exception:  # noqa: BLE001
         return None
-    return None
 
 
-CurrentUserDep = Annotated[User, Depends(get_current_user)]
-OptionalUserDep = Annotated[User | None, Depends(get_current_user_optional)]
+async def require_superuser(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    """Dependency verifying that the authenticated user has superuser privileges."""
+    if not current_user.is_superuser:
+        raise ForbiddenException(detail="Superuser access required")
+    return current_user
+
+
+CurrentUser = Annotated[User, Depends(get_current_user)]
+CurrentUserDep = CurrentUser
+
+OptionalUser = Annotated[User | None, Depends(get_current_user_optional)]
+OptionalUserDep = OptionalUser
+
+SuperuserDep = Annotated[User, Depends(require_superuser)]
+
+# Backwards compatibility dummy dependency
+SessionDep = Annotated[Any, Depends(lambda: None)]

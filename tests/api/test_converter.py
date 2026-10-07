@@ -1,29 +1,24 @@
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
 
-from app.core.security import create_access_token
+from app.repositories.job_repository import JobRepository
+from tests.conftest import create_test_supabase_token
 
 
-async def _auth_headers(client: AsyncClient) -> dict[str, str]:
-    response = await client.post(
-        "/api/v1/users",
-        json={
-            "email": "job-user@example.com",
-            "username": "jobuser",
-            "full_name": "Job User",
-            "password": "strongpassword123",
-        },
+def _auth_headers() -> dict[str, str]:
+    token = create_test_supabase_token(
+        email="job-user@example.com",
+        username="jobuser",
+        full_name="Job User",
     )
-    user_id = response.json()["id"]
-    token = create_access_token(str(user_id))
     return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.mark.asyncio
 async def test_create_convert_file_job(client: AsyncClient):
-    headers = await _auth_headers(client)
+    headers = _auth_headers()
     response = await client.post(
         "/api/v1/convert-file",
         headers=headers,
@@ -43,7 +38,7 @@ async def test_create_convert_file_job(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_create_convert_file_job_with_uploaded_file(client: AsyncClient):
-    headers = await _auth_headers(client)
+    headers = _auth_headers()
     response = await client.post(
         "/api/v1/convert-file",
         headers=headers,
@@ -63,7 +58,7 @@ async def test_create_convert_file_job_with_uploaded_file(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_create_image_job(client: AsyncClient):
-    headers = await _auth_headers(client)
+    headers = _auth_headers()
     response = await client.post(
         "/api/v1/image/process",
         headers=headers,
@@ -80,7 +75,7 @@ async def test_create_image_job(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_get_job_status(client: AsyncClient):
-    headers = await _auth_headers(client)
+    headers = _auth_headers()
     create_response = await client.post(
         "/api/v1/convert-file",
         headers=headers,
@@ -115,7 +110,7 @@ async def test_get_job_status(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_create_presigned_upload_url(client: AsyncClient):
-    headers = await _auth_headers(client)
+    headers = _auth_headers()
     response = await client.post(
         "/api/v1/files/presigned-upload-url",
         headers=headers,
@@ -134,7 +129,7 @@ async def test_create_presigned_upload_url(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_download_job_result_file(client: AsyncClient):
-    headers = await _auth_headers(client)
+    headers = _auth_headers()
     # 1. Create a job
     create_response = await client.post(
         "/api/v1/convert-file",
@@ -148,19 +143,13 @@ async def test_download_job_result_file(client: AsyncClient):
     assert down_before.status_code == 400
 
     # 3. Simulate completion in database
-    from datetime import datetime, timedelta
-
-    from app.repositories.job_repository import JobRepository
-    from tests.conftest import TestingSessionLocal as AsyncSessionLocal
-
-    async with AsyncSessionLocal() as session:
-        repo = JobRepository(session)
-        job = await repo.get(job_id)
-        assert job is not None
-        expires_at = datetime.now(UTC) + timedelta(minutes=20)
-        await repo.mark_completed(
-            job, output_key=f"outputs/{job_id}/result.pdf", expires_at=expires_at
-        )
+    repo = JobRepository()
+    job = await repo.get(job_id)
+    assert job is not None
+    expires_at = datetime.now(UTC) + timedelta(minutes=20)
+    await repo.mark_completed(
+        job, output_key=f"outputs/{job_id}/result.pdf", expires_at=expires_at
+    )
 
     # 4. Now download succeeds
     down_after = await client.get(f"/api/v1/files/{job_id}/download", headers=headers)
@@ -173,11 +162,6 @@ async def test_download_job_result_file(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_anonymous_convert_file_lifecycle(client: AsyncClient):
-    from datetime import datetime, timedelta
-
-    from app.repositories.job_repository import JobRepository
-    from tests.conftest import TestingSessionLocal as AsyncSessionLocal
-
     # 1. Anonymous create convert-file job (no Authorization header)
     response = await client.post(
         "/api/v1/convert-file",
@@ -197,16 +181,15 @@ async def test_anonymous_convert_file_lifecycle(client: AsyncClient):
     assert job_info["status"] == "queued"
 
     # 3. Simulate Celery worker completing the job
-    async with AsyncSessionLocal() as session:
-        repo = JobRepository(session)
-        job = await repo.get(job_id)
-        assert job is not None
-        expires_at = datetime.now(UTC) + timedelta(minutes=20)
-        await repo.mark_completed(
-            job,
-            output_key=f"outputs/{job_id}/result.svg",
-            expires_at=expires_at,
-        )
+    repo = JobRepository()
+    job = await repo.get(job_id)
+    assert job is not None
+    expires_at = datetime.now(UTC) + timedelta(minutes=20)
+    await repo.mark_completed(
+        job,
+        output_key=f"outputs/{job_id}/result.svg",
+        expires_at=expires_at,
+    )
 
     # 4. Anonymous download result (no Authorization header)
     download_res = await client.get(f"/api/v1/files/{job_id}/download")
@@ -222,13 +205,9 @@ async def test_anonymous_convert_file_lifecycle(client: AsyncClient):
     assert direct_res.content == b"fake-file-content" or len(direct_res.content) > 0
 
     # 5. Simulate expiration
-    async with AsyncSessionLocal() as session:
-        repo = JobRepository(session)
-        job = await repo.get(job_id)
-        assert job is not None
-        job.expires_at = datetime.now(UTC) - timedelta(minutes=1)
-        await session.commit()
+    job = await repo.get(job_id)
+    assert job is not None
+    await repo.mark_expired(job)
 
     expired_res = await client.get(f"/api/v1/files/{job_id}/download")
     assert expired_res.status_code == 410
-

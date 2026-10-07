@@ -2,26 +2,19 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from app.api.v1.endpoints.health import router as health_router
 from app.api.v1.router import api_router
 from app.core.config import settings
-from app.core.database import Base, engine
 from app.utils.logger import logger
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.APP_NAME} in {settings.APP_ENV} mode...")
-    if "sqlite" in settings.DATABASE_URL:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database tables verified/created.")
-
     yield
-
     logger.info(f"Shutting down {settings.APP_NAME}...")
-    await engine.dispose()
 
 
 def create_application() -> FastAPI:
@@ -33,6 +26,9 @@ def create_application() -> FastAPI:
         redoc_url=f"{settings.API_V1_PREFIX}/redoc",
         lifespan=lifespan,
     )
+
+    # GZip compression for responses > 1KB (JSON, SVG, text)
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
 
     if settings.BACKEND_CORS_ORIGINS:
         app.add_middleware(

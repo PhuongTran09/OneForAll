@@ -185,10 +185,15 @@ class BackgroundRemovalService:
         try:
             with self._infer_lock, torch.inference_mode():
                 x = self._preprocess(image)
-                pred = self._model(x)[-1].sigmoid()  # (1, 1, 1024, 1024)
+                if self.device == "cuda":
+                    with torch.autocast(device_type="cuda", dtype=torch.float16):
+                        pred = self._model(x)[-1].sigmoid()
+                else:
+                    pred = self._model(x)[-1].sigmoid()
+
                 # Resize mask về kích thước gốc ngay trên GPU (nhanh hơn PIL trên CPU)
                 pred = F.interpolate(
-                    pred, size=(height, width), mode="bilinear", align_corners=False
+                    pred.float(), size=(height, width), mode="bilinear", align_corners=False
                 )
                 mask_np = (
                     (pred[0, 0] * 255.0).round_().clamp_(0, 255).to(torch.uint8).cpu().numpy()

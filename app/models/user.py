@@ -1,23 +1,21 @@
-from sqlalchemy import Boolean, Integer, String
-from sqlalchemy.orm import Mapped, mapped_column
+from datetime import UTC, datetime
 
-from app.core.database import Base
-from app.models.base import TimestampMixin
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class User(Base, TimestampMixin):
-    __tablename__ = "users"
+class User(BaseModel):
+    """User profile model backed by Supabase public.profiles table (linked to auth.users.id)."""
 
-    id: Mapped[int] = mapped_column(
-        Integer, primary_key=True, index=True, autoincrement=True
-    )
-    email: Mapped[str] = mapped_column(
-        String(255), unique=True, index=True, nullable=False
-    )
-    username: Mapped[str] = mapped_column(
-        String(100), unique=True, index=True, nullable=False
-    )
-    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
-    full_name: Mapped[str] = mapped_column(String(255), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    is_superuser: Mapped[bool] = mapped_column(Boolean, default=False)
+    id: str = Field(..., description="UUID corresponding to auth.users.id")
+    email: str | None = None
+    username: str
+    full_name: str | None = None
+    is_active: bool = True
+    is_superuser: bool = False
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+Profile = User

@@ -11,13 +11,11 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     API_V1_PREFIX: str = "/api/v1"
 
-    # Security
-    SECRET_KEY: str = "dev-secret-key-change-in-production-123456789"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
-    ALGORITHM: str = "HS256"
-
-    # Database
-    DATABASE_URL: str = "sqlite+aiosqlite:///./oneforall.db"
+    # Supabase (Auth & PostgreSQL)
+    SUPABASE_URL: str = ""
+    SUPABASE_KEY: str = ""
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
+    SUPABASE_JWT_SECRET: str = ""
 
     # Celery / Redis
     CELERY_BROKER_URL: str = "redis://redis:6379/0"

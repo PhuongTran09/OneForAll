@@ -2,7 +2,7 @@ import mimetypes
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query, status
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import RedirectResponse, StreamingResponse
 
 from app.api.deps import CurrentUserDep, OptionalUserDep, SessionDep
 from app.models.job import JobStatus
@@ -63,12 +63,11 @@ async def download_job_result_file(
             detail="Không tìm thấy Job hoặc bạn không có quyền truy cập.",
         )
 
-    if job.user_id != "anonymous":
-        if not current_user or job.user_id != str(current_user.id):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Bạn không có quyền truy cập file này.",
-            )
+    if job.user_id != "anonymous" and (not current_user or job.user_id != str(current_user.id)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bạn không có quyền truy cập file này.",
+        )
 
     # 1. Kiểm tra đã hết hạn chưa
     now = datetime.now(UTC)
@@ -99,14 +98,13 @@ async def download_job_result_file(
             detail="Không tìm thấy file kết quả của Job.",
         )
 
-    # Tùy chọn 1: Tải trực tiếp file nhị phân không cần chuyển hướng
+    # Tùy chọn 1: Tải trực tiếp file nhị phân qua stream (không nạp toàn bộ vào RAM)
     if direct:
-        file_bytes = storage_service.download_bytes(key=job.output_key)
         filename = job.output_key.split("/")[-1]
         media_type, _ = mimetypes.guess_type(filename)
         media_type = media_type or "application/octet-stream"
-        return Response(
-            content=file_bytes,
+        return StreamingResponse(
+            storage_service.download_stream(key=job.output_key),
             media_type=media_type,
             headers={
                 "Content-Disposition": f'attachment; filename="{filename}"',

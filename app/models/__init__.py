@@ -1,6 +1,5 @@
-from app.core.database import Base
-from app.models.job import Job, JobStatus
 from app.models.base import TimestampMixin
-from app.models.user import User
+from app.models.job import Job, JobStatus
+from app.models.user import Profile, User
 
-__all__ = ["Base", "Job", "JobStatus", "TimestampMixin", "User"]
+__all__ = ["Job", "JobStatus", "Profile", "TimestampMixin", "User"]

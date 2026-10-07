@@ -4,7 +4,6 @@ import json
 from datetime import UTC
 from typing import Any
 
-from app.core.database import AsyncSessionLocal
 from app.repositories.job_repository import JobRepository
 from app.services.file_converter_service import file_converter_service
 from app.services.storage_service import storage_service
@@ -99,95 +98,94 @@ def execute_conversion(
 
 async def _async_process_convert_job(job_id: str) -> dict[str, Any]:
     """Asynchronous job execution logic interacting with Database and Storage."""
-    async with AsyncSessionLocal() as session:
-        repo = JobRepository(session)
-        job = await repo.get(job_id)
-        if not job:
-            logger.error("[convert-worker] Job %s not found in database", job_id)
-            return {"job_id": job_id, "error": "Job not found", "status": "failed"}
+    repo = JobRepository()
+    job = await repo.get(job_id)
+    if not job:
+        logger.error("[convert-worker] Job %s not found in database", job_id)
+        return {"job_id": job_id, "error": "Job not found", "status": "failed"}
 
-        if not job.input_key:
-            err = "Job input_key is empty"
-            await repo.mark_failed(job, err)
-            return {"job_id": job_id, "error": err, "status": "failed"}
+    if not job.input_key:
+        err = "Job input_key is empty"
+        await repo.mark_failed(job, err)
+        return {"job_id": job_id, "error": err, "status": "failed"}
 
-        await repo.mark_processing(job)
-        metadata = job.job_metadata or {}
-        from_format = metadata.get("from", "")
-        to_format = metadata.get("to", "")
-        options = metadata.get("options", {})
+    await repo.mark_processing(job)
+    metadata = job.job_metadata or {}
+    from_format = metadata.get("from", "")
+    to_format = metadata.get("to", "")
+    options = metadata.get("options", {})
 
-        try:
-            # 1. Tải nội dung file từ Storage (Cloudflare R2 / local)
-            logger.info("[convert-worker] Downloading file from key: %s", job.input_key)
-            input_bytes = storage_service.download_bytes(key=job.input_key)
+    try:
+        # 1. Tải nội dung file từ Storage (Cloudflare R2 / local)
+        logger.info("[convert-worker] Downloading file from key: %s", job.input_key)
+        input_bytes = storage_service.download_bytes(key=job.input_key)
 
-            # 2. Thực hiện chuyển đổi file
-            logger.info(
-                "[convert-worker] Converting job %s: %s -> %s",
-                job_id,
-                from_format,
-                to_format,
-            )
-            output_bytes, content_type = execute_conversion(
-                input_bytes,
-                from_format=from_format,
-                to_format=to_format,
-                options=options,
-            )
+        # 2. Thực hiện chuyển đổi file
+        logger.info(
+            "[convert-worker] Converting job %s: %s -> %s",
+            job_id,
+            from_format,
+            to_format,
+        )
+        output_bytes, content_type = execute_conversion(
+            input_bytes,
+            from_format=from_format,
+            to_format=to_format,
+            options=options,
+        )
 
-            # 3. Upload file kết quả lên Storage (outputs/{job_id}/result.ext)
-            target_ext = to_format.lower().lstrip(".")
-            output_key = f"outputs/{job.id}/result.{target_ext}"
-            logger.info(
-                "[convert-worker] Uploading converted file to key: %s", output_key
-            )
-            storage_service.upload_bytes(
-                data=output_bytes,
-                key=output_key,
-                content_type=content_type,
-            )
+        # 3. Upload file kết quả lên Storage (outputs/{job_id}/result.ext)
+        target_ext = to_format.lower().lstrip(".")
+        output_key = f"outputs/{job.id}/result.{target_ext}"
+        logger.info(
+            "[convert-worker] Uploading converted file to key: %s", output_key
+        )
+        storage_service.upload_bytes(
+            data=output_bytes,
+            key=output_key,
+            content_type=content_type,
+        )
 
-            # 4. Xóa file gốc input trên R2 để tiết kiệm dung lượng
-            if job.input_key:
-                try:
-                    storage_service.delete_file(key=job.input_key)
-                    logger.info(
-                        "[convert-worker] Deleted original input file: %s",
-                        job.input_key,
-                    )
-                except Exception as del_err:  # noqa: BLE001
-                    logger.warning(
-                        "[convert-worker] Could not delete input file %s: %s",
-                        job.input_key,
-                        del_err,
-                    )
+        # 4. Xóa file gốc input trên R2 để tiết kiệm dung lượng
+        if job.input_key:
+            try:
+                storage_service.delete_file(key=job.input_key)
+                logger.info(
+                    "[convert-worker] Deleted original input file: %s",
+                    job.input_key,
+                )
+            except Exception as del_err:  # noqa: BLE001
+                logger.warning(
+                    "[convert-worker] Could not delete input file %s: %s",
+                    job.input_key,
+                    del_err,
+                )
 
-            # 5. Cập nhật trạng thái Job thành completed (hết hạn sau 20 phút)
-            from datetime import datetime, timedelta
+        # 5. Cập nhật trạng thái Job thành completed (hết hạn sau 20 phút)
+        from datetime import datetime, timedelta
 
-            expires_at = datetime.now(UTC) + timedelta(minutes=20)
-            await repo.mark_completed(job, output_key=output_key, expires_at=expires_at)
-            logger.info(
-                "[convert-worker] Job %s completed! Expires at: %s", job_id, expires_at
-            )
-            return {
-                "job_id": job_id,
-                "status": "completed",
-                "output_key": output_key,
-                "expires_at": expires_at.isoformat(),
-            }
+        expires_at = datetime.now(UTC) + timedelta(minutes=20)
+        await repo.mark_completed(job, output_key=output_key, expires_at=expires_at)
+        logger.info(
+            "[convert-worker] Job %s completed! Expires at: %s", job_id, expires_at
+        )
+        return {
+            "job_id": job_id,
+            "status": "completed",
+            "output_key": output_key,
+            "expires_at": expires_at.isoformat(),
+        }
 
-        except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "[convert-worker] Job %s failed: %s", job_id, exc, exc_info=True
-            )
-            await repo.mark_failed(job, error=str(exc))
-            return {
-                "job_id": job_id,
-                "status": "failed",
-                "error": str(exc),
-            }
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "[convert-worker] Job %s failed: %s", job_id, exc, exc_info=True
+        )
+        await repo.mark_failed(job, error=str(exc))
+        return {
+            "job_id": job_id,
+            "status": "failed",
+            "error": str(exc),
+        }
 
 
 @celery_app.task(

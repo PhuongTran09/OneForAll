@@ -1,6 +1,6 @@
 # OneForAll - FastAPI Backend Service & BiRefNet AI Background Removal
 
-Kiến trúc backend hiện đại, mở rộng được (clean layered architecture) dựa trên **FastAPI**, **SQLAlchemy 2.0 (Async)**, **Alembic**, **Pydantic v2**, và hệ thống tách nền AI **BiRefNet**.
+Kiến trúc backend hiện đại, mở rộng được (clean layered architecture) dựa trên **FastAPI**, **Supabase Auth & Supabase PostgreSQL (PostgREST)**, **Pydantic v2**, **Celery + Redis**, **Cloudflare R2 Storage**, và hệ thống tách nền AI **BiRefNet**.
 
 ---
 
@@ -10,53 +10,64 @@ Kiến trúc backend hiện đại, mở rộng được (clean layered architec
 OneForAll/
 ├── app/
 │   ├── api/
-│   │   ├── deps.py                 # Dependencies (DB session, Auth token, Current User)
+│   │   ├── deps.py                 # Dependencies (Supabase JWT auth, CurrentUser, require_superuser)
 │   │   ├── __init__.py
 │   │   └── v1/
 │   │       ├── endpoints/
 │   │       │   ├── bg_removal.py   # AI Remove Background endpoint (/api/v1/remove-bg)
+│   │       │   ├── converter.py    # File & Document converter endpoints (/api/v1/convert/*)
+│   │       │   ├── files.py        # Cloudflare R2 file management & presigned URLs
 │   │       │   ├── health.py       # Health check API & GPU/Model status (/health, /api/v1/health)
-│   │       │   └── users.py        # User CRUD API routes
+│   │       │   └── users.py        # User & Profile CRUD API routes (/api/v1/users)
 │   │       ├── router.py           # V1 main router aggregator
 │   │       └── __init__.py
 │   ├── core/
-│   │   ├── config.py               # Pydantic Settings & environment variables
-│   │   ├── database.py             # SQLAlchemy Async Engine, Base & Session
+│   │   ├── config.py               # Pydantic Settings & Supabase/R2/Redis configuration
 │   │   ├── exceptions.py           # Custom HTTP & App exceptions
-│   │   ├── security.py             # Password hashing (bcrypt) & JWT helpers
+│   │   ├── security.py             # Supabase JWT token verification
+│   │   ├── supabase.py             # Async & Sync Supabase clients
 │   │   └── __init__.py
 │   ├── models/
-│   │   ├── base.py                 # TimestampMixin & base model classes
-│   │   ├── user.py                 # User ORM model
+│   │   ├── base.py                 # Pydantic base models & TimestampMixin
+│   │   ├── job.py                  # Job & JobStatus domain models
+│   │   ├── user.py                 # User & Profile domain models (Supabase auth.users UUID)
 │   │   └── __init__.py
 │   ├── repositories/
-│   │   ├── base.py                 # Generic BaseRepository CRUD operations
-│   │   ├── user_repository.py      # UserRepository
+│   │   ├── base.py                 # Generic BaseRepository PostgREST operations
+│   │   ├── job_repository.py       # JobRepository (PostgREST)
+│   │   ├── user_repository.py      # UserRepository (PostgREST profiles)
 │   │   └── __init__.py
 │   ├── schemas/
 │   │   ├── common.py               # Standard response & pagination schemas
-│   │   ├── user.py                 # User request/response DTOs & token schemas
+│   │   ├── user.py                 # User request/response DTOs (UUID-based)
 │   │   └── __init__.py
 │   ├── services/
 │   │   ├── bg_removal_service.py   # AI Service: BiRefNet-Lite inference & Image processing
-│   │   ├── user_service.py         # Business logic layer
+│   │   ├── file_service.py         # Cloudflare R2 storage service
+│   │   ├── job_service.py          # Background Job management service
+│   │   ├── user_service.py         # User profile management service
 │   │   └── __init__.py
+│   ├── worker/                     # Celery background workers
+│   │   ├── celery_app.py           # Celery application & queues config
+│   │   └── tasks/
+│   │       ├── cleanup.py          # Periodic R2/Job cleanup task
+│   │       └── convert.py          # Async file conversion worker task
 │   ├── utils/
 │   │   ├── logger.py               # Centralized logging configuration
 │   │   └── __init__.py
 │   ├── main.py                     # FastAPI application entry point, lifespan & CORS
 │   └── __init__.py
-├── migrations/                     # Alembic database migrations
-│   ├── versions/
-│   │   └── .gitkeep
-│   ├── env.py                      # Async migration runner
-│   └── script.py.mako              # Migration file template
+├── supabase/                       # Supabase database schemas & triggers
+│   └── schema.sql                  # DDL for public.profiles, public.jobs, RLS & triggers
 ├── tests/                          # Automated tests with pytest
 │   ├── api/
+│   │   ├── test_auth.py            # Test Supabase JWT verification & CurrentUser
 │   │   ├── test_bg_removal.py      # Test validation cho endpoint remove-bg
+│   │   ├── test_converter.py       # Test API chuyển đổi định dạng
 │   │   ├── test_health.py          # Test kiểm tra endpoint health
-│   │   └── test_users.py           # Test tích hợp CRUD users
-│   ├── conftest.py                 # In-memory SQLite & AsyncClient fixtures
+│   │   └── test_users.py           # Test CRUD users với Supabase profiles & UUID
+│   ├── test_convert_worker.py      # Test Celery conversion task
+│   ├── conftest.py                 # In-memory Supabase PostgREST/Auth mock fixtures
 │   └── __init__.py
 ├── .env.example                    # Sample environment variables
 ├── .env                            # Local environment variables
@@ -129,8 +140,21 @@ pip install -r requirements.txt
 ```bash
 cp .env.example .env
 ```
+Điền các giá trị Supabase từ Project Settings:
+- `SUPABASE_URL`: `https://<project-ref>.supabase.co`
+- `SUPABASE_KEY`: Anon/public API key
+- `SUPABASE_SERVICE_ROLE_KEY`: Service role key bí mật
+- `SUPABASE_JWT_SECRET`: JWT Secret (dùng để verify chữ ký HS256 từ Supabase Auth)
 
-### 4. Chạy ứng dụng nhanh (Quick Start)
+### 4. Khởi tạo Database Supabase (Schema & RLS)
+
+Chạy file SQL migration [`supabase/schema.sql`](supabase/schema.sql) trong **Supabase SQL Editor** trên Dashboard của dự án:
+- Tạo bảng `public.profiles` liên kết với `auth.users.id` (UUID).
+- Tạo bảng `public.jobs` lưu trữ lịch sử tác vụ chuyển đổi & AI.
+- Tạo Trigger `on_auth_user_created` tự động tạo profile khi người dùng đăng ký qua Supabase Auth.
+- Kích hoạt Row Level Security (RLS) bảo vệ dữ liệu.
+
+### 5. Chạy ứng dụng nhanh (Quick Start)
 
 Dự án đã tích hợp sẵn lệnh chạy trọn gói (FastAPI + Celery Worker + Celery Beat dọn dẹp file tự động):
 
@@ -164,7 +188,7 @@ docker compose up --build
 
 ---
 
-### 5. Tài liệu API (Interactive Docs)
+### 6. Tài liệu API (Interactive Docs)
 
 Truy cập tài liệu API tự động:
 - **Swagger UI**: [http://localhost:8000/api/v1/docs](http://localhost:8000/api/v1/docs)

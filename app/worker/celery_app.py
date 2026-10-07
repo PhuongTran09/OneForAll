@@ -69,9 +69,15 @@ celery_app.conf.update(
     task_default_routing_key=settings.CELERY_DEFAULT_QUEUE,
     task_queues=CELERY_QUEUES,
     task_routes=CELERY_ROUTES,
-    # Worker optimization settings for independent scaling
+    # Worker optimization settings for independent scaling & memory management
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    worker_max_tasks_per_child=100,  # Recycle worker processes to prevent memory leaks
+    result_expires=1800,  # Redis result keys expire after 30 minutes
+    broker_connection_retry_on_startup=True,
+    task_compression="gzip",
+    result_compression="gzip",
+    worker_disable_rate_limits=True,
     # Periodic Cleanup Schedule: runs every 60 seconds (1 minute)
     beat_schedule={
         "cleanup-expired-jobs-every-minute": {

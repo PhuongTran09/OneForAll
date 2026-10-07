@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from typing import Any
 from urllib.parse import quote
 
@@ -165,6 +166,32 @@ class StorageService:
         local_path = Path("uploads") / key
         if local_path.exists():
             return local_path.read_bytes()
+        raise RuntimeError(f"File {key} not found and Cloudflare R2 is not configured.")
+
+    def download_stream(
+        self, *, key: str, chunk_size: int = 65536
+    ) -> Iterator[bytes]:
+        """
+        Stream file content in chunks from Cloudflare R2 (or local fallback).
+        Prevents high memory usage (RAM) when serving large file downloads.
+        """
+        client = self.get_client()
+        if client:
+            response = client.get_object(
+                Bucket=settings.R2_BUCKET_NAME,
+                Key=key,
+            )
+            yield from response["Body"].iter_chunks(chunk_size=chunk_size)
+            return
+
+        from pathlib import Path
+
+        local_path = Path("uploads") / key
+        if local_path.exists():
+            with open(local_path, "rb") as f:
+                while chunk := f.read(chunk_size):
+                    yield chunk
+            return
         raise RuntimeError(f"File {key} not found and Cloudflare R2 is not configured.")
 
     def delete_file(self, *, key: str) -> bool:

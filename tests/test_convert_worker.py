@@ -6,7 +6,6 @@ from PIL import Image
 
 from app.models.job import JobStatus
 from app.repositories.job_repository import JobRepository
-from tests.conftest import TestingSessionLocal as AsyncSessionLocal
 from app.services.storage_service import storage_service
 from app.worker.tasks.cleanup import cleanup_expired_jobs_task
 from app.worker.tasks.convert import process_convert_job
@@ -25,21 +24,20 @@ async def test_process_convert_job_png_to_svg():
         data=png_bytes, key=input_key, content_type="image/png"
     )
 
-    # 2. Insert Job in database
-    async with AsyncSessionLocal() as session:
-        repo = JobRepository(session)
-        job = await repo.create(
-            user_id="test_user",
-            type="convert_file",
-            input_key=input_key,
-            metadata={
-                "from": "png",
-                "to": "svg",
-                "operation": "png-to-svg",
-                "options": {"colormode": "color", "mode": "spline"},
-            },
-        )
-        job_id = job.id
+    # 2. Insert Job in Supabase database
+    repo = JobRepository()
+    job = await repo.create(
+        user_id="test_user",
+        type="convert_file",
+        input_key=input_key,
+        metadata={
+            "from": "png",
+            "to": "svg",
+            "operation": "png-to-svg",
+            "options": {"colormode": "color", "mode": "spline"},
+        },
+    )
+    job_id = job.id
 
     # 3. Execute Worker task directly
     result = process_convert_job(job_id)
@@ -49,14 +47,12 @@ async def test_process_convert_job_png_to_svg():
     assert "expires_at" in result
 
     # 4. Verify DB was updated
-    async with AsyncSessionLocal() as session:
-        repo = JobRepository(session)
-        updated_job = await repo.get(job_id)
-        assert updated_job is not None
-        assert updated_job.status == JobStatus.COMPLETED.value
-        assert updated_job.progress == 100
-        assert updated_job.output_key == result["output_key"]
-        assert updated_job.expires_at is not None
+    updated_job = await repo.get(job_id)
+    assert updated_job is not None
+    assert updated_job.status == JobStatus.COMPLETED.value
+    assert updated_job.progress == 100
+    assert updated_job.output_key == result["output_key"]
+    assert updated_job.expires_at is not None
 
 
 @pytest.mark.asyncio
@@ -75,30 +71,27 @@ async def test_cleanup_expired_jobs():
     assert input_key in _fake_storage
     assert output_key in _fake_storage
 
-    async with AsyncSessionLocal() as session:
-        repo = JobRepository(session)
-        job = await repo.create(
-            user_id="test_user",
-            type="convert_file",
-            input_key=input_key,
-            metadata={},
-        )
-        job_id = job.id
-        expired_time = datetime.now(UTC) - timedelta(minutes=5)
-        await repo.mark_completed(job, output_key=output_key, expires_at=expired_time)
+    repo = JobRepository()
+    job = await repo.create(
+        user_id="test_user",
+        type="convert_file",
+        input_key=input_key,
+        metadata={},
+    )
+    job_id = job.id
+    expired_time = datetime.now(UTC) - timedelta(minutes=5)
+    await repo.mark_completed(job, output_key=output_key, expires_at=expired_time)
 
-    # 2. Run cleanup task (Yes -> delete output, delete input, status=expired, commit)
+    # 2. Run cleanup task (delete output, delete input, status=expired)
     cleanup_result = cleanup_expired_jobs_task()
     assert cleanup_result["cleaned_count"] >= 1
     assert input_key not in _fake_storage
     assert output_key not in _fake_storage
 
     # 3. Verify Job status in DB is now 'expired'
-    async with AsyncSessionLocal() as session:
-        repo = JobRepository(session)
-        cleaned_job = await repo.get(job_id)
-        assert cleaned_job is not None
-        assert cleaned_job.status == JobStatus.EXPIRED.value
+    cleaned_job = await repo.get(job_id)
+    assert cleaned_job is not None
+    assert cleaned_job.status == JobStatus.EXPIRED.value
 
     # 4. Run cleanup again when no expired jobs exist (No -> 0)
     no_jobs_result = cleanup_expired_jobs_task()
