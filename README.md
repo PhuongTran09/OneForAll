@@ -82,33 +82,44 @@ OneForAll/
 
 ---
 
-## 🎨 Tính Năng Tách Nền AI (BiRefNet-Lite)
+## 🏗️ Kiến Trúc Chuyển Đổi Không Đồng Bộ (Asynchronous Job System)
 
-- **Mô hình**: `ZhengPeng7/BiRefNet_lite`
-- **Tự động nhận diện phần cứng**: Tự động sử dụng `CUDA` (GPU) nếu khả dụng, ngược lại dùng `CPU`.
-- **Hỗ trợ ảnh EXIF**: Tự động xoay ảnh đúng chiều theo metadata EXIF từ điện thoại.
-- **Nén PNG tối ưu**: Sử dụng `compress_level=1` giúp xuất ảnh nhanh gấp 3-5 lần.
-- **Worker Threadpool**: Endpoint tách nền chạy trên worker threadpool của FastAPI tránh nghẽn luồng asyncio.
-
-### Endpoint:
-- `POST /api/v1/remove-bg`: Tải lên file ảnh (`multipart/form-data` với key `file`), trả về ảnh PNG có nền trong suốt (`image/png`).
+Hệ thống tuân thủ mô hình **API → Service → Repository → Worker → Processor**:
+- **Client**: Tải file hoặc cung cấp `input_key` / `url` tới API `/api/v1/convert-file` (hoặc `/api/v1/convert`), `/api/v1/image/process`, `/api/v1/video/jobs`.
+- **FastAPI Endpoint**: Validate request, khởi tạo Job trong Supabase Database và ủy thác sang `JobService`.
+- **JobService & TaskQueueService**: Lưu thông tin Job (`PENDING`) và đẩy tác vụ vào hàng đợi Celery (Redis broker) theo từng queue chuyên biệt:
+  - `convert`: Document & vector conversion (`LibreOffice`, `vtracer`, `xhtml2pdf`, `docx`).
+  - `image`: Xử lý ảnh Pillow (resize, compress, format convert).
+  - `video`: Xử lý video/âm thanh FFmpeg & tải/trích xuất từ URL (`yt-dlp`).
+  - `gpu`: Mô hình AI (tách nền `BiRefNet` trên GPU CUDA).
+- **Worker & Processor**: Worker nhận task, tải dữ liệu từ Storage, gọi Processor tương ứng (`DocumentConvertProcessor`, `ImageProcessProcessor`, `VideoAudioProcessor`, `GpuAiProcessor`), tải kết quả lên Cloudflare R2 / Storage và cập nhật trạng thái Job (`COMPLETED` / `FAILED`).
+- **Client Polling & Download**: Client kiểm tra trạng thái tại `GET /api/v1/jobs/{job_id}` và tải file kết quả tại `GET /api/v1/files/{job_id}/download` (hỗ trợ direct stream, 307 redirect hoặc presigned URL).
 
 ---
 
-## 🔄 Dịch Vụ Chuyển Đổi Định Dạng (File & Document Converter)
+## 🔄 Các Tính Năng Chuyển Đổi Hỗ Trợ
 
-Hỗ trợ chuyển đổi đa định dạng hình ảnh và tài liệu:
+1. **File & Document Conversion**:
+   - `PNG ➔ SVG`: Vector hóa qua `vtracer`.
+   - `DOC/DOCX ➔ PDF`: Chuyển đổi DOCX sang PDF chuẩn A4.
+   - `TXT ➔ PDF`: PDF hỗ trợ Unicode tiếng Việt.
+   - `TXT ➔ DOC/DOCX`: Xuất file Microsoft Word (.docx).
+   - `XLSX ➔ CSV`: UTF-8 with BOM tương thích Excel tiếng Việt.
+   - `XLSX ➔ JSON`: Trích xuất bảng tính sang JSON array.
+   - `PNG ➔ JPG/JPEG`: Tự động thay nền trong suốt với màu tùy chọn.
+   - `JPG ➔ WEBP`: Nén định dạng WEBP chất lượng cao / lossless.
 
-| Chuyển đổi | Endpoint | Phương thức | Output Media-Type | Ghi chú |
-|---|---|---|---|---|
-| **PNG ➔ SVG** | `/api/v1/convert/png-to-svg` | `POST` | `image/svg+xml` | Vector hóa ảnh qua `vtracer`, hỗ trợ color/binary, spline/polygon |
-| **DOC/DOCX ➔ PDF** | `/api/v1/convert/doc-to-pdf` | `POST` | `application/pdf` | Chuyển đổi DOCX chuẩn A4, hỗ trợ bảng biểu, hình ảnh |
-| **TXT ➔ PDF** | `/api/v1/convert/txt-to-pdf` | `POST` | `application/pdf` | Hỗ trợ đầy đủ font Tiếng Việt có dấu, phân trang chuẩn |
-| **TXT ➔ DOC/DOCX** | `/api/v1/convert/txt-to-doc` | `POST` | `application/vnd.openxmlformats-officedocument...` | Xuất file Microsoft Word (.docx) |
-| **XLSX ➔ CSV** | `/api/v1/convert/xlsx-to-csv` | `POST` | `text/csv` | Mã hóa UTF-8 with BOM tương thích 100% tiếng Việt trên Excel |
-| **XLSX ➔ JSON** | `/api/v1/convert/xlsx-to-json` | `POST` | `application/json` | Trích xuất dạng JSON Array hoặc tải file đính kèm |
-| **PNG ➔ JPG/JPEG** | `/api/v1/convert/png-to-jpg` | `POST` | `image/jpeg` | Xử lý vùng trong suốt (alpha) bằng nền màu tùy chọn |
-| **JPG ➔ WEBP** | `/api/v1/convert/jpg-to-webp` | `POST` | `image/webp` | Nén WEBP thế hệ mới với tùy chọn chất lượng & lossless |
+2. **Image Processing**:
+   - Nén ảnh, thay đổi kích thước (resize giữ tỉ lệ), crop, đổi định dạng ảnh.
+
+3. **Video & Audio Processing**:
+   - Chuyển mã định dạng video (MP4, MKV, AVI, WEBM qua FFmpeg).
+   - Trích xuất âm thanh từ video sang MP3, WAV, AAC.
+   - Chụp ảnh thumbnail tại thời điểm bất kỳ.
+   - Tải video và trích xuất nhạc từ URL (YouTube, TikTok, ...) bằng `yt-dlp` thành MP3/MP4.
+
+4. **AI Background Removal**:
+   - Tách nền ảnh tự động bằng mô hình BiRefNet trên GPU CUDA.
 
 
 ---

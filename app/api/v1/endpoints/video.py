@@ -14,6 +14,13 @@ async def create_video_job(
     session: SessionDep,
     current_user: CurrentUserDep,
 ):
+    if not request.input_file_key and not request.url:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either input_file_key or url must be provided.",
+        )
+
     job = await job_service.create_and_enqueue(
         session=session,
         user=current_user,
@@ -23,6 +30,7 @@ async def create_video_job(
             input_key=request.input_file_key,
             metadata={
                 "operation": request.operation,
+                "url": request.url,
                 "options": request.params,
             },
         ),

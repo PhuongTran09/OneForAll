@@ -6,12 +6,15 @@ VideoOperation = Literal[
     "transcode",
     "extract-audio",
     "thumbnail",
+    "url_download",
+    "download",
 ]
 
 
 class TaskRequest(BaseModel):
     operation: str = Field(min_length=1, max_length=100)
-    input_file_key: str = Field(min_length=1, max_length=1024)
+    input_file_key: str | None = Field(default=None, max_length=1024)
+    url: str | None = Field(default=None, max_length=2048)
     params: dict[str, Any] = Field(default_factory=dict)
 
 

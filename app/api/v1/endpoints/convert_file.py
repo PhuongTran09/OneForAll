@@ -9,11 +9,18 @@ from app.schemas.job import JobAccepted, JobCreate
 from app.services.job_service import job_service
 from app.services.storage_service import storage_service
 
-router = APIRouter(prefix="/convert-file", tags=["Convert File"])
+router = APIRouter(tags=["Convert File"])
 
 
 @router.post(
-    "",
+    "/convert-file",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Tạo Job chuyển đổi file (multipart/form-data)",
+    description="Tải lên file trực tiếp hoặc cung cấp input_key để tạo background job chuyển đổi.",
+)
+@router.post(
+    "/convert",
     response_model=JobAccepted,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Tạo Job chuyển đổi file (multipart/form-data)",

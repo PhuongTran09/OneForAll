@@ -45,25 +45,25 @@ services:
   worker_convert:
     <<: *worker-base
     container_name: oneforall_worker_convert
-    command: celery -A app.workers worker -Q convert -n worker_convert@%h --loglevel=INFO --concurrency=2
+    command: celery -A app.worker.celery_app worker -Q convert -n worker_convert@%h --loglevel=INFO --concurrency=2
 
   # 2. Image Worker: Pillow operations (I/O & CPU light, high concurrency)
   worker_image:
     <<: *worker-base
     container_name: oneforall_worker_image
-    command: celery -A app.workers worker -Q image -n worker_image@%h --loglevel=INFO --concurrency=4
+    command: celery -A app.worker.celery_app worker -Q image -n worker_image@%h --loglevel=INFO --concurrency=4
 
   # 3. Video Worker: FFmpeg & yt-dlp (CPU & Disk I/O intensive)
   worker_video:
     <<: *worker-base
     container_name: oneforall_worker_video
-    command: celery -A app.workers worker -Q video -n worker_video@%h --loglevel=INFO --concurrency=1
+    command: celery -A app.worker.celery_app worker -Q video -n worker_video@%h --loglevel=INFO --concurrency=1
 
   # 4. GPU Worker: BiRefNet background removal & AI models (VRAM intensive)
   worker_gpu:
     <<: *worker-base
     container_name: oneforall_worker_gpu
-    command: celery -A app.workers worker -Q gpu -n worker_gpu@%h --loglevel=INFO --concurrency=1 -P solo
+    command: celery -A app.worker.celery_app worker -Q gpu -n worker_gpu@%h --loglevel=INFO --concurrency=1 -P solo
     environment:
       - APP_NAME=OneForAll
       - APP_ENV=development
@@ -88,7 +88,7 @@ services:
   beat:
     <<: *worker-base
     container_name: oneforall_beat
-    command: celery -A app.workers beat --loglevel=INFO
+    command: celery -A app.worker.celery_app beat --loglevel=INFO
 
   redis:
     image: redis:7-alpine

@@ -211,3 +211,30 @@ async def test_anonymous_convert_file_lifecycle(client: AsyncClient):
 
     expired_res = await client.get(f"/api/v1/files/{job_id}/download")
     assert expired_res.status_code == 410
+
+
+@pytest.mark.asyncio
+async def test_convert_route_alias(client: AsyncClient):
+    """Verify that both /convert and /convert-file create jobs properly."""
+    response = await client.post(
+        "/api/v1/convert",
+        data={"to": "pdf", "input_key": "uploads/doc.txt", "from": "txt"},
+    )
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_create_video_job_with_url(client: AsyncClient):
+    headers = _auth_headers()
+    response = await client.post(
+        "/api/v1/video/jobs",
+        headers=headers,
+        json={
+            "operation": "url_download",
+            "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "params": {"format": "mp3"},
+        },
+    )
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"

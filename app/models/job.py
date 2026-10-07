@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class JobStatus(StrEnum):
+    PENDING = "queued"
     QUEUED = "queued"
     PROCESSING = "processing"
     COMPLETED = "completed"

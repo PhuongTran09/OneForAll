@@ -1,7 +1,6 @@
 import pytest
 
 import app.worker as worker_pkg
-import app.workers as workers_pkg
 from app.services.task_queue_service import resolve_queue_and_task
 from app.worker.celery_app import CeleryQueue, celery_app
 
@@ -15,9 +14,7 @@ def test_celery_app_queues_configured():
 
 
 def test_cli_entrypoints():
-    # Verify both app.workers and app.worker expose celery_app and app
-    assert workers_pkg.celery_app is celery_app
-    assert workers_pkg.app is celery_app
+    # Verify app.worker exposes celery_app and app
     assert worker_pkg.celery_app is celery_app
     assert worker_pkg.app is celery_app
 
