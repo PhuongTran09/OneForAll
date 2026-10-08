@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -101,12 +101,26 @@ class JobRepository:
         data = res.data[0] if res.data else {**job.model_dump(), **updates}
         return Job.model_validate(data)
 
-    async def mark_failed(self, job: Job, error: str) -> Job:
+    async def mark_failed(
+        self,
+        job: Job,
+        error: str,
+        expires_at: datetime | None = None,
+    ) -> Job:
         client = await self._get_client()
+        now = datetime.now(UTC)
+        completed_at = now.isoformat()
+        # Job failed có thời hạn lưu trữ 5 phút trước khi bị dọn dẹp
+        failed_expires_at = expires_at or (now + timedelta(minutes=5))
         updates = {
             "status": JobStatus.FAILED.value,
             "error": error,
-            "completed_at": datetime.now(UTC).isoformat(),
+            "completed_at": completed_at,
+            "expires_at": (
+                failed_expires_at.isoformat()
+                if isinstance(failed_expires_at, datetime)
+                else str(failed_expires_at)
+            ),
         }
         res = await client.table("jobs").update(updates).eq("id", job.id).execute()
         data = res.data[0] if res.data else {**job.model_dump(), **updates}
@@ -130,17 +144,23 @@ class JobRepository:
         return Job.model_validate(data)
 
     async def get_expired_jobs(self, now: datetime) -> list[Job]:
-        """Fetch all completed jobs whose expires_at is earlier than or equal to now."""
+        """Fetch all completed jobs or failed jobs that have exceeded their retention period.
+
+        - Completed jobs expire when expires_at <= now (default TTL 3 mins).
+        - Failed jobs expire 5 minutes after failure (expires_at <= now or completed_at + 5m <= now).
+        """
         client = await self._get_client()
-        res = (
+        now_utc = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
+        expired: list[Job] = []
+
+        # 1. Completed jobs (TTL 3 phút)
+        completed_res = (
             await client.table("jobs")
             .select("*")
             .eq("status", JobStatus.COMPLETED.value)
             .execute()
         )
-        now_utc = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
-        expired: list[Job] = []
-        for item in res.data or []:
+        for item in completed_res.data or []:
             job = Job.model_validate(item)
             if job.expires_at:
                 exp = (
@@ -150,6 +170,35 @@ class JobRepository:
                 )
                 if exp <= now_utc:
                     expired.append(job)
+
+        # 2. Failed jobs (xóa sau 5 phút)
+        failed_res = (
+            await client.table("jobs")
+            .select("*")
+            .eq("status", JobStatus.FAILED.value)
+            .execute()
+        )
+        for item in failed_res.data or []:
+            job = Job.model_validate(item)
+            if job.expires_at:
+                exp = (
+                    job.expires_at
+                    if job.expires_at.tzinfo is not None
+                    else job.expires_at.replace(tzinfo=UTC)
+                )
+                if exp <= now_utc:
+                    expired.append(job)
+            else:
+                base_time = job.completed_at or job.created_at
+                if base_time:
+                    base_utc = (
+                        base_time
+                        if base_time.tzinfo is not None
+                        else base_time.replace(tzinfo=UTC)
+                    )
+                    if base_utc + timedelta(minutes=5) <= now_utc:
+                        expired.append(job)
+
         return expired
 
     async def delete(self, job_id: str) -> bool:

@@ -184,10 +184,29 @@ def mock_external_services(monkeypatch):
         _fake_storage[key] = data
         return key
 
+    def fake_upload_file(*, local_path, key, **kwargs):
+        from pathlib import Path
+
+        _fake_storage[key] = Path(local_path).read_bytes()
+        return key
+
+    def fake_upload_fileobj(*, fileobj, key, **kwargs):
+        _fake_storage[key] = fileobj.read()
+        return key
+
     def fake_download(*, key, **kwargs):
         if key in _fake_storage:
             return _fake_storage[key]
         return b"fake-file-content"
+
+    def fake_download_to_file(*, key, local_path, **kwargs):
+        from pathlib import Path
+
+        dest = Path(local_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        content = _fake_storage.get(key, b"fake-file-content")
+        dest.write_bytes(content)
+        return dest
 
     def fake_download_stream(*, key, **kwargs):
         yield fake_download(key=key)
@@ -205,8 +224,20 @@ def mock_external_services(monkeypatch):
         fake_upload,
     )
     monkeypatch.setattr(
+        "app.services.storage_service.storage_service.upload_file",
+        fake_upload_file,
+    )
+    monkeypatch.setattr(
+        "app.services.storage_service.storage_service.upload_fileobj",
+        fake_upload_fileobj,
+    )
+    monkeypatch.setattr(
         "app.services.storage_service.storage_service.download_bytes",
         fake_download,
+    )
+    monkeypatch.setattr(
+        "app.services.storage_service.storage_service.download_to_file",
+        fake_download_to_file,
     )
     monkeypatch.setattr(
         "app.services.storage_service.storage_service.download_stream",

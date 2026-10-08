@@ -8,10 +8,15 @@ from app.utils.logger import logger
 from app.worker.celery_app import CeleryQueue, celery_app
 from app.worker.lifecycle import run_in_worker_loop
 from app.worker.processors.video import video_audio_processor
+from app.worker.workspace import cleanup_job_temp_dir, get_job_workspace
 
 
 async def _async_process_video_job(job_id: str) -> dict[str, Any]:
-    """Asynchronous video job processing logic interacting with Database and Storage."""
+    """Asynchronous video job processing logic interacting with Database and Storage.
+
+    Architecture: R2 -> Worker SSD -> Processor -> SSD -> R2
+    Streams files to/from disk without loading large video/audio into RAM.
+    """
     repo = JobRepository()
     job = await repo.get(job_id)
     if not job:
@@ -20,37 +25,70 @@ async def _async_process_video_job(job_id: str) -> dict[str, Any]:
 
     await repo.mark_processing(job)
     metadata = job.job_metadata or {}
-    operation = metadata.get("operation", "transcode")
-    url = metadata.get("url")
+    operation = str(metadata.get("operation", "transcode")).lower()
+    sub_opts = metadata.get("options", {}) or metadata.get("params", {})
+    url = metadata.get("url") or sub_opts.get("url")
 
+    workspace = get_job_workspace(job_id)
     try:
-        input_bytes = b""
+        workspace.check_disk_space()
+
+        input_path = None
         if url or operation in ("url_download", "download", "ytdlp"):
             logger.info("[video-worker] Processing from URL: %s", url)
+            target_ext = str(sub_opts.get("format", "mp4")).lower().lstrip(".")
         elif job.input_key and job.input_key != "string":
             logger.info("[video-worker] Downloading video from key: %s", job.input_key)
-            input_bytes = storage_service.download_bytes(key=job.input_key)
+            src_ext = job.input_key.split(".")[-1] if "." in job.input_key else "mp4"
+            input_path = workspace.input_path(src_ext)
+            storage_service.download_to_file(key=job.input_key, local_path=input_path)
+
+            if operation in ("extract-audio", "audio"):
+                target_ext = str(sub_opts.get("format", "mp3")).lower().lstrip(".")
+            elif operation == "thumbnail":
+                target_ext = "jpg"
+            else:
+                target_ext = str(sub_opts.get("format", "mp4")).lower().lstrip(".")
         else:
             raise ValueError("Neither input_key nor url was provided for video processing.")
 
-        logger.info("[video-worker] Processing video %s: operation=%s", job_id, operation)
-        output_bytes, content_type = video_audio_processor.process(input_bytes, options=metadata)
+        output_path = workspace.output_path(target_ext)
 
-        # Output extension based on content_type
-        ext = content_type.split("/")[-1].split(";")[0]
+        logger.info(
+            "[video-worker] Processing video %s: operation=%s -> %s",
+            job_id,
+            operation,
+            output_path,
+        )
+        content_type = video_audio_processor.process_file(
+            input_path=input_path,
+            output_path=output_path,
+            options=metadata,
+        )
+
+        # Output extension based on content_type / output_path
+        ext = target_ext
         if ext == "jpeg":
             ext = "jpg"
         output_key = f"outputs/{job.id}/result.{ext}"
 
         logger.info("[video-worker] Uploading video result to key: %s", output_key)
-        storage_service.upload_bytes(data=output_bytes, key=output_key, content_type=content_type)
+        storage_service.upload_file(
+            local_path=output_path,
+            key=output_key,
+            content_type=content_type,
+        )
 
         if job.input_key and job.input_key != "string":
             try:
                 storage_service.delete_file(key=job.input_key)
                 logger.info("[video-worker] Deleted input file: %s", job.input_key)
             except Exception as del_err:  # noqa: BLE001
-                logger.warning("[video-worker] Could not delete input file %s: %s", job.input_key, del_err)
+                logger.warning(
+                    "[video-worker] Could not delete input file %s: %s",
+                    job.input_key,
+                    del_err,
+                )
 
         # Final output có thời hạn tối đa 3 phút
         expires_at = datetime.now(UTC) + timedelta(minutes=3)
@@ -71,6 +109,8 @@ async def _async_process_video_job(job_id: str) -> dict[str, Any]:
             "status": JobStatus.FAILED.value,
             "error": str(exc),
         }
+    finally:
+        cleanup_job_temp_dir(job_id)
 
 
 @celery_app.task(

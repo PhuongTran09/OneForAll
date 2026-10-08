@@ -106,26 +106,56 @@ OneForAll/
 
 ## 🏗️ Kiến Trúc Hệ Thống (Architecture & Workflows)
 
-Hệ thống tuân thủ mô hình **API → Service → Repository → Celery Worker → Processor**:
-- **Client**: Tải file hoặc cung cấp `input_key` / `url` (YouTube, TikTok) tới:
-  - `/api/v1/media/process`: Xử lý video, audio, URL download (hỗ trợ cả alias `/video/process`, `/video/jobs`).
-  - `/api/v1/image/process`: Nén, đổi kích thước, tách nền AI hình ảnh.
-  - `/api/v1/convert-file` (alias `/convert`): Chuyển đổi định dạng tài liệu, tự động nhận diện format nguồn.
-- **FastAPI Endpoint**: Nhận request, tạo bản ghi Job trong database Supabase (`status: queued`) và đẩy task vào Celery queue chuyên biệt qua `JobService` & `TaskQueueService`.
-- **Celery Queues**:
-  - `convert`: Document & vector conversion (`vtracer`, `xhtml2pdf`, `docx`, `openpyxl`).
+Hệ thống tuân thủ kiến trúc **R2 → Worker SSD → Processor → SSD → R2**, loại bỏ hoàn toàn việc nạp file lớn vào RAM:
+
+```text
+Client
+  ↓
+Presigned Upload URL / Stream Upload
+  ↓
+Cloudflare R2 (uploads/{job_id}/original.{ext})
+  ↓
+FastAPI (chỉ nhận input_key / stream fileobj trực tiếp, không buffer toàn bộ vào RAM)
+  ↓
+Create Job → Celery / Redis
+  ↓
+Worker: Download streaming từ R2 về SSD cục bộ
+  /tmp/oneforall/{job_id}/input.{ext}
+  ↓
+Processor: Nhận file path trực tiếp trên SSD
+  FFmpeg / Pillow / Document / BiRefNet GPU
+  ↓
+Kết quả ghi trực tiếp ra SSD:
+  /tmp/oneforall/{job_id}/output.{ext}
+  ↓
+Upload multipart / stream từ SSD lên Cloudflare R2:
+  outputs/{job_id}/result.{ext}
+  ↓
+Xóa file input gốc trên R2 (nếu có)
+  ↓
+Dọn dẹp triệt để thư mục tạm trên SSD (/tmp/oneforall/{job_id}/) qua block `finally`
+```
+
+### ⚙️ Quy Tắc Quản Lý Tài Nguyên & Concurrency
+
+- **Isolated Job Workspace**: Mỗi job sở hữu một thư mục SSD riêng biệt:
+  ```text
+  /tmp/oneforall/{job_id}/
+  ├── input.{ext}
+  ├── output.{ext}
+  └── work/
+  ```
+- **SSD Cleanup**: Luôn được dọn dẹp bằng `try ... finally: cleanup_job_temp_dir(job_id)` bất kể job thành công hay thất bại.
+- **Disk Free Space Check**: Tự động kiểm tra dung lượng ổ đĩa khả dụng trước khi xử lý file lớn để tránh tràn SSD.
+- **Zero Full-File Memory Loading**:
+  - Không dùng `await file.read()` nạp cả file vào RAM (chỉ đọc 4KB header để nhận diện định dạng, sau đó stream trực tiếp bằng `upload_fileobj`).
+  - Không dùng `with open(...) as f: f.read()` đối với processor outputs.
+  - Processors nhận và trả file path (`process_file(input_path, output_path)`).
+- **Hàng đợi & Concurrency Celery**:
+  - `convert`: Document & vector conversion (`vtracer`, `docx`, `openpyxl`).
   - `image`: Xử lý ảnh Pillow (resize, compress, format convert).
   - `video`: Xử lý video/audio FFmpeg & tải/trích xuất từ URL bằng `yt-dlp` + `curl-cffi` (giả lập Chrome).
-  - `gpu`: Tách nền AI `BiRefNet` trên GPU CUDA.
-- **Worker & Processor**:
-  - Tải file từ storage hoặc tải từ URL vào thư mục tạm `tmp_dir` local.
-  - Xử lý hoàn toàn tại local, tự động dọn dẹp triệt để bằng khối `finally` (`shutil.rmtree`).
-  - Chỉ upload duy nhất file kết quả cuối cùng lên Cloudflare R2: `outputs/{job_id}/result.{ext}`.
-  - Xóa ngay file input gốc trên R2 (nếu có).
-  - Đặt thời hạn lưu trữ `expires_at = NOW() + 3 phút`.
-- **Client Polling & Download**:
-  - Tra cứu tiến độ tại `GET /api/v1/jobs/{job_id}`.
-  - Tải file kết quả tại `GET /api/v1/files/{job_id}/download` (hỗ trợ binary stream, presigned URL hoặc redirect 307).
+  - `gpu`: Tách nền AI `BiRefNet` trên GPU CUDA (mặc định worker concurrency = 1 tránh OOM VRAM).
 
 ---
 
@@ -135,7 +165,7 @@ Nhằm tối ưu chi phí lưu trữ Cloudflare R2, băng thông và dung lượ
 
 ```text
 Temporary & Intermediate files
-    → Chỉ lưu cục bộ trong tmp_dir của worker
+    → Chỉ lưu cục bộ trong /tmp/oneforall/{job_id}/ của worker SSD
     → Xóa sạch ngay lập tức qua block `finally` (không bao giờ đẩy lên R2)
 
 Final Output
@@ -149,6 +179,13 @@ Final Output
     → User không tải:
           ↳ Celery Beat quét định kỳ mỗi 1 phút:
           ↳ Xóa output trên R2 và DELETE job khỏi Database
+
+Failed Jobs (status = 'failed')
+    → Giữ lại 5 phút để client/user tra cứu thông tin lỗi qua GET /api/v1/jobs/{job_id}
+    → Sau 5 phút (expires_at = completed_at + 5m):
+          ↳ Celery Beat quét định kỳ mỗi 1 phút:
+          ↳ Dọn dẹp file R2 tồn đọng (nếu có)
+          ↳ DELETE bản ghi job khỏi Database
 
 Presigned URL Download:
     → Client có thể gọi POST /api/v1/files/{job_id}/consumed sau khi tải xong để dọn dẹp ngay.

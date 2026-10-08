@@ -8,10 +8,15 @@ from app.utils.logger import logger
 from app.worker.celery_app import CeleryQueue, celery_app
 from app.worker.lifecycle import run_in_worker_loop
 from app.worker.processors.gpu import gpu_ai_processor
+from app.worker.workspace import cleanup_job_temp_dir, get_job_workspace
 
 
 async def _async_process_gpu_job(job_id: str) -> dict[str, Any]:
-    """Asynchronous GPU/AI job processing logic interacting with Database and Storage."""
+    """Asynchronous GPU/AI job processing logic interacting with Database and Storage.
+
+    Architecture: R2 -> Worker SSD -> Processor -> SSD -> R2
+    Operates directly on local SSD file paths.
+    """
     repo = JobRepository()
     job = await repo.get(job_id)
     if not job:
@@ -26,22 +31,45 @@ async def _async_process_gpu_job(job_id: str) -> dict[str, Any]:
     await repo.mark_processing(job)
     metadata = job.job_metadata or {}
 
+    workspace = get_job_workspace(job_id)
     try:
-        logger.info("[gpu-worker] Downloading image from key: %s", job.input_key)
-        input_bytes = storage_service.download_bytes(key=job.input_key)
+        workspace.check_disk_space()
 
-        logger.info("[gpu-worker] Executing BiRefNet model on %s", job_id)
-        output_bytes, content_type = gpu_ai_processor.process(input_bytes, options=metadata)
+        src_ext = job.input_key.split(".")[-1] if "." in job.input_key else "png"
+        input_path = workspace.input_path(src_ext)
+        logger.info("[gpu-worker] Downloading image to SSD: %s -> %s", job.input_key, input_path)
+        storage_service.download_to_file(key=job.input_key, local_path=input_path)
+
+        output_path = workspace.output_path("png")
+        logger.info(
+            "[gpu-worker] Executing BiRefNet model on %s: %s -> %s",
+            job_id,
+            input_path,
+            output_path,
+        )
+        content_type = gpu_ai_processor.process_file(
+            input_path=input_path,
+            output_path=output_path,
+            options=metadata,
+        )
 
         output_key = f"outputs/{job.id}/result.png"
         logger.info("[gpu-worker] Uploading transparent PNG result to key: %s", output_key)
-        storage_service.upload_bytes(data=output_bytes, key=output_key, content_type=content_type)
+        storage_service.upload_file(
+            local_path=output_path,
+            key=output_key,
+            content_type=content_type,
+        )
 
         if job.input_key:
             try:
                 storage_service.delete_file(key=job.input_key)
             except Exception as del_err:  # noqa: BLE001
-                logger.warning("[gpu-worker] Could not delete input file %s: %s", job.input_key, del_err)
+                logger.warning(
+                    "[gpu-worker] Could not delete input file %s: %s",
+                    job.input_key,
+                    del_err,
+                )
 
         expires_at = datetime.now(UTC) + timedelta(minutes=3)
         await repo.mark_completed(job, output_key=output_key, expires_at=expires_at)
@@ -61,6 +89,8 @@ async def _async_process_gpu_job(job_id: str) -> dict[str, Any]:
             "status": JobStatus.FAILED.value,
             "error": str(exc),
         }
+    finally:
+        cleanup_job_temp_dir(job_id)
 
 
 @celery_app.task(

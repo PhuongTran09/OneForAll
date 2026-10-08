@@ -10,8 +10,10 @@ from app.worker.lifecycle import run_in_worker_loop
 
 async def _async_cleanup_expired_jobs() -> dict[str, Any]:
     """
-    Quét Database và xóa các file kết quả đã quá hạn expires_at (20 phút).
-    Cập nhật status sang 'expired'.
+    Quét Database và xóa các file / bản ghi Job quá hạn:
+    - Output files của completed job quá hạn (TTL 3 phút).
+    - Bản ghi các job có status 'failed' sau 5 phút.
+    Xóa file liên quan trên R2 và DELETE bản ghi job khỏi Database.
     """
     now = datetime.now(UTC)
     cleaned_count = 0
@@ -21,8 +23,9 @@ async def _async_cleanup_expired_jobs() -> dict[str, Any]:
 
     for job in expired_jobs:
         logger.info(
-            "[cleanup-worker] Processing expired job: %s (expires_at: %s)",
+            "[cleanup-worker] Processing expired/failed job: %s (status: %s, expires_at: %s)",
             job.id,
+            job.status,
             job.expires_at,
         )
 

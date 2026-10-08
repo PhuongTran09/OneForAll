@@ -93,24 +93,25 @@ async def create_video_job(
     job_id = str(uuid4())
 
     if file:
-        content = await file.read()
-        if not content:
+        header = await file.read(4096)
+        if not header:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="File tải lên bị rỗng.",
             )
+        await file.seek(0)
 
         detected_ext = (
             detect_format(
-                content=content,
+                content=header,
                 filename=file.filename,
                 content_type=file.content_type,
             )
             or "mp4"
         )
         target_key = f"uploads/{job_id}/original.{detected_ext}"
-        storage_service.upload_bytes(
-            data=content,
+        storage_service.upload_fileobj(
+            fileobj=file.file,
             key=target_key,
             content_type=file.content_type,
         )

@@ -8,10 +8,15 @@ from app.utils.logger import logger
 from app.worker.celery_app import CeleryQueue, celery_app
 from app.worker.lifecycle import run_in_worker_loop
 from app.worker.processors.image import image_processor
+from app.worker.workspace import cleanup_job_temp_dir, get_job_workspace
 
 
 async def _async_process_image_job(job_id: str) -> dict[str, Any]:
-    """Asynchronous image job processing logic interacting with Database and Storage."""
+    """Asynchronous image job processing logic interacting with Database and Storage.
+
+    Architecture: R2 -> Worker SSD -> Processor -> SSD -> R2
+    Operates directly on local SSD file paths.
+    """
     repo = JobRepository()
     job = await repo.get(job_id)
     if not job:
@@ -27,26 +32,59 @@ async def _async_process_image_job(job_id: str) -> dict[str, Any]:
     metadata = job.job_metadata or {}
     operation = metadata.get("operation", "compress")
 
+    workspace = get_job_workspace(job_id)
     try:
-        logger.info("[image-worker] Downloading file from key: %s", job.input_key)
-        input_bytes = storage_service.download_bytes(key=job.input_key)
+        workspace.check_disk_space()
 
-        logger.info("[image-worker] Processing image %s: operation=%s", job_id, operation)
-        output_bytes, content_type = image_processor.process(input_bytes, options=metadata)
+        src_ext = job.input_key.split(".")[-1] if "." in job.input_key else "png"
+        input_path = workspace.input_path(src_ext)
+        logger.info("[image-worker] Downloading image to SSD: %s -> %s", job.input_key, input_path)
+        storage_service.download_to_file(key=job.input_key, local_path=input_path)
+
+        sub_opts = metadata.get("options", {}) or metadata.get("params", {})
+        target_fmt = str(sub_opts.get("format", src_ext)).lower()
+        if target_fmt in ("jpeg", "jpg"):
+            target_ext = "jpg"
+        elif target_fmt == "webp":
+            target_ext = "webp"
+        else:
+            target_ext = "png"
+
+        output_path = workspace.output_path(target_ext)
+
+        logger.info(
+            "[image-worker] Processing image %s: operation=%s -> %s",
+            job_id,
+            operation,
+            output_path,
+        )
+        content_type = image_processor.process_file(
+            input_path=input_path,
+            output_path=output_path,
+            options=metadata,
+        )
 
         # Output extension based on content_type
         ext_map = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
-        target_ext = ext_map.get(content_type, "png")
-        output_key = f"outputs/{job.id}/result.{target_ext}"
+        final_ext = ext_map.get(content_type, target_ext)
+        output_key = f"outputs/{job.id}/result.{final_ext}"
 
         logger.info("[image-worker] Uploading processed image to key: %s", output_key)
-        storage_service.upload_bytes(data=output_bytes, key=output_key, content_type=content_type)
+        storage_service.upload_file(
+            local_path=output_path,
+            key=output_key,
+            content_type=content_type,
+        )
 
         if job.input_key:
             try:
                 storage_service.delete_file(key=job.input_key)
             except Exception as del_err:  # noqa: BLE001
-                logger.warning("[image-worker] Could not delete input file %s: %s", job.input_key, del_err)
+                logger.warning(
+                    "[image-worker] Could not delete input file %s: %s",
+                    job.input_key,
+                    del_err,
+                )
 
         expires_at = datetime.now(UTC) + timedelta(minutes=3)
         await repo.mark_completed(job, output_key=output_key, expires_at=expires_at)
@@ -66,6 +104,8 @@ async def _async_process_image_job(job_id: str) -> dict[str, Any]:
             "status": JobStatus.FAILED.value,
             "error": str(exc),
         }
+    finally:
+        cleanup_job_temp_dir(job_id)
 
 
 @celery_app.task(

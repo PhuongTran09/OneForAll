@@ -82,16 +82,17 @@ async def create_convert_file_job(
     resolved_from: str | None = None
 
     if file:
-        content = await file.read()
-        if not content:
+        header = await file.read(4096)
+        if not header:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="File tải lên bị rỗng.",
             )
+        await file.seek(0)
 
         # Tự động detect format dựa trên file upload (ưu tiên MIME type + extension + magic bytes)
         detected = detect_format(
-            content=content,
+            content=header,
             filename=file.filename,
             content_type=file.content_type,
         )
@@ -105,8 +106,8 @@ async def create_convert_file_job(
         # Định dạng key chuẩn theo thiết kế: uploads/{job_id}/original.ext
         safe_ext = resolved_from
         target_key = f"uploads/{job_id}/original.{safe_ext}"
-        storage_service.upload_bytes(
-            data=content,
+        storage_service.upload_fileobj(
+            fileobj=file.file,
             key=target_key,
             content_type=file.content_type,
         )

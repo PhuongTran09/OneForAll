@@ -138,3 +138,42 @@ async def test_process_convert_job_consecutive_runs():
     if loop_before is not None:
         assert loop_before is loop_after
 
+
+@pytest.mark.asyncio
+async def test_cleanup_failed_jobs_after_5_minutes():
+    """Verify failed jobs are retained for 5 minutes and then deleted."""
+    repo = JobRepository()
+
+    # 1. Job failed recently (2 minutes ago) -> expires in 3 minutes -> NOT expired yet
+    recent_job = await repo.create(
+        user_id="test_user",
+        type="convert_file",
+        input_key="uploads/recent_failed/input.bin",
+        metadata={},
+    )
+    # mark_failed sets expires_at = now + 5 minutes
+    await repo.mark_failed(recent_job, error="Temporary failure")
+
+    # 2. Job failed 6 minutes ago -> expires_at was 1 minute ago -> EXPIRED
+    old_job = await repo.create(
+        user_id="test_user",
+        type="convert_file",
+        input_key="uploads/old_failed/input.bin",
+        metadata={},
+    )
+    past_expires = datetime.now(UTC) - timedelta(minutes=1)
+    await repo.mark_failed(old_job, error="Fatal failure", expires_at=past_expires)
+
+    # Run cleanup
+    cleanup_result = cleanup_expired_jobs_task()
+    assert cleanup_result["cleaned_count"] >= 1
+
+    # Old failed job (> 5 mins) must be deleted from DB
+    assert await repo.get(old_job.id) is None
+
+    # Recent failed job (< 5 mins) must still be present in DB
+    still_present = await repo.get(recent_job.id)
+    assert still_present is not None
+    assert still_present.status == JobStatus.FAILED.value
+
+

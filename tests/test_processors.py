@@ -1,4 +1,5 @@
 import io
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -131,6 +132,38 @@ async def test_process_video_job_tiktok_to_mp4():
     updated = await repo.get(job.id)
     assert updated is not None
     assert updated.status == JobStatus.COMPLETED.value
+
+
+def test_download_url_to_file_transcodes_bytevc1_to_h264(tmp_path: Path):
+    """Verify that downloading video with ByteVC1/HEVC triggers FFmpeg transcode to standard H.264."""
+    out_file = tmp_path / "result.mp4"
+    work_dir = tmp_path / "work"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    raw_file = work_dir / "media.mp4"
+    raw_file.write_bytes(b"raw-bytevc1-data")
+
+    with (
+        patch("yt_dlp.YoutubeDL"),
+        patch.object(video_audio_processor, "_probe_video_codec", return_value=("bytevc1", "yuv420p")),
+        patch.object(video_audio_processor, "_run_ffmpeg") as mock_ffmpeg,
+    ):
+        def fake_ffmpeg(cmd):
+            transcoded = work_dir / "transcoded.mp4"
+            transcoded.write_bytes(b"transcoded-h264-data")
+        mock_ffmpeg.side_effect = fake_ffmpeg
+
+        res = video_audio_processor.download_url_to_file(
+            url="https://www.tiktok.com/@test/video/123",
+            output_path=out_file,
+            target_format="mp4",
+        )
+        assert res == "video/mp4"
+        assert mock_ffmpeg.called
+        cmd = mock_ffmpeg.call_args[0][0]
+        assert "libx264" in cmd
+        assert "yuv420p" in cmd
+        assert out_file.exists()
+        assert out_file.read_bytes() == b"transcoded-h264-data"
 
 
 @pytest.mark.asyncio

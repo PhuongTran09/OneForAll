@@ -8,10 +8,15 @@ from app.utils.logger import logger
 from app.worker.celery_app import CeleryQueue, celery_app
 from app.worker.lifecycle import run_in_worker_loop
 from app.worker.processors.document import document_processor
+from app.worker.workspace import cleanup_job_temp_dir, get_job_workspace
 
 
 async def _async_process_convert_job(job_id: str) -> dict[str, Any]:
-    """Asynchronous job execution logic interacting with Database and Storage."""
+    """Asynchronous job execution logic interacting with Database and Storage.
+
+    Architecture: R2 -> Worker SSD -> Processor -> SSD -> R2
+    Streams files to/from disk without loading full file into RAM.
+    """
     repo = JobRepository()
     job = await repo.get(job_id)
     if not job:
@@ -28,31 +33,40 @@ async def _async_process_convert_job(job_id: str) -> dict[str, Any]:
     from_format = metadata.get("from", "")
     to_format = metadata.get("to", "")
 
+    workspace = get_job_workspace(job_id)
     try:
-        # 1. Tải nội dung file từ Storage (Cloudflare R2 / local)
-        logger.info("[convert-worker] Downloading file from key: %s", job.input_key)
-        input_bytes = storage_service.download_bytes(key=job.input_key)
+        workspace.check_disk_space()
 
-        # 2. Thực hiện chuyển đổi file qua Processor
+        # 1. Tải nội dung file từ Storage (Cloudflare R2 / local) trực tiếp xuống SSD
+        src_ext = from_format.lower().lstrip(".") or (
+            job.input_key.split(".")[-1] if "." in job.input_key else "bin"
+        )
+        input_path = workspace.input_path(src_ext)
+        logger.info("[convert-worker] Downloading file to SSD: %s -> %s", job.input_key, input_path)
+        storage_service.download_to_file(key=job.input_key, local_path=input_path)
+
+        # 2. Thực hiện chuyển đổi file qua Processor trực tiếp trên SSD
+        target_ext = to_format.lower().lstrip(".")
+        output_path = workspace.output_path(target_ext)
         logger.info(
             "[convert-worker] Converting job %s: %s -> %s",
             job_id,
-            from_format,
-            to_format,
+            input_path,
+            output_path,
         )
-        output_bytes, content_type = document_processor.process(
-            input_bytes,
+        content_type = document_processor.process_file(
+            input_path=input_path,
+            output_path=output_path,
             options=metadata,
         )
 
-        # 3. Upload file kết quả lên Storage (outputs/{job_id}/result.ext)
-        target_ext = to_format.lower().lstrip(".")
+        # 3. Upload file kết quả từ SSD lên Storage (outputs/{job_id}/result.ext)
         output_key = f"outputs/{job.id}/result.{target_ext}"
         logger.info(
             "[convert-worker] Uploading converted file to key: %s", output_key
         )
-        storage_service.upload_bytes(
-            data=output_bytes,
+        storage_service.upload_file(
+            local_path=output_path,
             key=output_key,
             content_type=content_type,
         )
@@ -95,6 +109,8 @@ async def _async_process_convert_job(job_id: str) -> dict[str, Any]:
             "status": JobStatus.FAILED.value,
             "error": str(exc),
         }
+    finally:
+        cleanup_job_temp_dir(job_id)
 
 
 @celery_app.task(

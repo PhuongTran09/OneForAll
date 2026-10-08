@@ -1,4 +1,5 @@
 import io
+from pathlib import Path
 import threading
 from typing import Any
 
@@ -137,9 +138,12 @@ class BackgroundRemovalService:
 
     # ------------------------------------------------------------------ helpers
     @staticmethod
-    def _open_image(image_bytes: bytes) -> Image.Image:
+    def _open_image(image_input: bytes | str | Path) -> Image.Image:
         try:
-            raw = Image.open(io.BytesIO(image_bytes))
+            if isinstance(image_input, bytes):
+                raw = Image.open(io.BytesIO(image_input))
+            else:
+                raw = Image.open(image_input)
             # Kiểm tra kích thước TRƯỚC khi giải mã toàn bộ ảnh
             if raw.width * raw.height > MAX_INPUT_PIXELS:
                 raise AppException(
@@ -166,6 +170,46 @@ class BackgroundRemovalService:
         return (tensor - self._mean) / self._std
 
     # ------------------------------------------------------------------ main
+    def remove_background_file(self, input_path: str | Path, output_path: str | Path) -> None:
+        """Tách nền từ file ảnh và lưu trực tiếp kết quả PNG vào output_path mà không buffer toàn bộ vào RAM."""
+        if self._model is None:
+            self.load_model()
+
+        import torch
+        import torch.nn.functional as F
+
+        image = self._open_image(input_path)
+        width, height = image.size
+
+        try:
+            with self._infer_lock, torch.inference_mode():
+                x = self._preprocess(image)
+                if self.device == "cuda":
+                    with torch.autocast(device_type="cuda", dtype=torch.float16):
+                        pred = self._model(x)[-1].sigmoid()
+                else:
+                    pred = self._model(x)[-1].sigmoid()
+
+                pred = F.interpolate(
+                    pred.float(), size=(height, width), mode="bilinear", align_corners=False
+                )
+                mask_np = (
+                    (pred[0, 0] * 255.0).round_().clamp_(0, 255).to(torch.uint8).cpu().numpy()
+                )
+        except torch.cuda.OutOfMemoryError as e:
+            torch.cuda.empty_cache()
+            raise AppException(
+                status_code=503, detail="GPU hết bộ nhớ, vui lòng thử lại sau."
+            ) from e
+        except Exception as e:
+            logger.exception("[!] Lỗi khi suy luận tách nền")
+            raise AppException(status_code=500, detail="Không thể xử lý ảnh.") from e
+
+        image.putalpha(Image.fromarray(mask_np, mode="L"))
+        out_p = Path(output_path)
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        image.save(out_p, format="PNG", compress_level=1)
+
     def remove_background(self, image_bytes: bytes) -> bytes:
         """Tách nền ảnh đầu vào và trả về byte ảnh PNG trong suốt.
 

@@ -1,4 +1,7 @@
 import io
+import os
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from PIL import Image
@@ -14,19 +17,30 @@ class ImageProcessProcessor(BaseProcessor):
     - resize (dimension scaling with aspect ratio preserving)
     - crop (bounding box cropping)
     - format (format transcode via Pillow)
+
+    Supports direct file-to-file processing avoiding full RAM buffering.
     """
 
-    def process(self, input_data: bytes, options: dict[str, Any]) -> tuple[bytes, str]:
+    def process_file(
+        self,
+        input_path: str | Path,
+        output_path: str | Path,
+        options: dict[str, Any],
+    ) -> str:
+        """Process image file directly on disk from input_path to output_path."""
         operation = str(options.get("operation", "compress")).lower()
         sub_opts = options.get("options", {}) or options.get("params", {})
 
+        out_p = Path(output_path)
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+
         try:
-            image = Image.open(io.BytesIO(input_data))
+            image = Image.open(input_path)
         except Exception as exc:
             raise AppException(status_code=400, detail="Invalid image file") from exc
 
         orig_format = image.format or "PNG"
-        target_format = str(sub_opts.get("format", orig_format)).upper()
+        target_format = str(sub_opts.get("format", out_p.suffix.lstrip(".") or orig_format)).upper()
         if target_format in ("JPG", "JPEG"):
             target_format = "JPEG"
 
@@ -46,8 +60,7 @@ class ImageProcessProcessor(BaseProcessor):
             if isinstance(box, list | tuple) and len(box) == 4:
                 image = image.crop((int(box[0]), int(box[1]), int(box[2]), int(box[3])))
 
-        # 3. Format & Compress output
-        out_buf = io.BytesIO()
+        # 3. Format & Compress output directly to disk
         quality = int(sub_opts.get("quality", 85))
 
         if target_format == "JPEG":
@@ -58,21 +71,33 @@ class ImageProcessProcessor(BaseProcessor):
                     image = image.convert("RGBA")
                 rgb_img.paste(image, mask=image.split()[-1] if image.mode == "RGBA" else None)
                 image = rgb_img
-            image.save(out_buf, format="JPEG", quality=quality, optimize=True)
-            return out_buf.getvalue(), "image/jpeg"
+            image.save(out_p, format="JPEG", quality=quality, optimize=True)
+            return "image/jpeg"
 
         elif target_format == "WEBP":
             lossless = bool(sub_opts.get("lossless", False))
-            image.save(out_buf, format="WEBP", quality=quality, lossless=lossless)
-            return out_buf.getvalue(), "image/webp"
+            image.save(out_p, format="WEBP", quality=quality, lossless=lossless)
+            return "image/webp"
 
         elif target_format == "PNG":
-            image.save(out_buf, format="PNG", optimize=True, compress_level=6)
-            return out_buf.getvalue(), "image/png"
+            image.save(out_p, format="PNG", optimize=True, compress_level=6)
+            return "image/png"
 
         else:
-            image.save(out_buf, format=target_format)
-            return out_buf.getvalue(), f"image/{target_format.lower()}"
+            image.save(out_p, format=target_format)
+            return f"image/{target_format.lower()}"
+
+    def _process_bytes(self, input_data: bytes, options: dict[str, Any]) -> tuple[bytes, str]:
+        """Legacy in-memory processor for byte inputs."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            inp = os.path.join(tmp_dir, "input.raw")
+            outp = os.path.join(tmp_dir, "output.raw")
+            with open(inp, "wb") as f:
+                f.write(input_data)
+            content_type = self.process_file(inp, outp, options)
+            with open(outp, "rb") as f:
+                res_bytes = f.read()
+            return res_bytes, content_type
 
 
 image_processor = ImageProcessProcessor()

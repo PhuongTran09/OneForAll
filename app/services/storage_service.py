@@ -1,4 +1,6 @@
 from collections.abc import Iterator
+from pathlib import Path
+import shutil
 from typing import Any
 from urllib.parse import quote
 
@@ -120,6 +122,89 @@ class StorageService:
             expires_in=expires_in,
         )
 
+    def upload_file(
+        self, *, local_path: str | Path, key: str, content_type: str | None = None
+    ) -> str:
+        """
+        Upload a file directly from SSD/local disk to Cloudflare R2 (or local fallback).
+        Uses boto3 managed multipart upload without buffering the entire file into RAM.
+        """
+        src = Path(local_path)
+        if not src.exists():
+            raise FileNotFoundError(f"Local file '{src}' does not exist for upload to '{key}'.")
+
+        client = self.get_client()
+        if client:
+            extra_args: dict[str, Any] = {}
+            if content_type:
+                extra_args["ContentType"] = content_type
+
+            client.upload_file(
+                Filename=str(src),
+                Bucket=settings.R2_BUCKET_NAME,
+                Key=key,
+                ExtraArgs=extra_args or None,
+            )
+            return key
+
+        dest = Path("uploads") / key
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dest)
+        logger.warning("R2 is not configured; copied file locally from %s to %s", src, dest)
+        return key
+
+    def upload_fileobj(
+        self, *, fileobj: Any, key: str, content_type: str | None = None
+    ) -> str:
+        """
+        Stream an open file-like object directly to Cloudflare R2 (or local fallback).
+        Streams in chunks without loading the entire payload into RAM.
+        """
+        client = self.get_client()
+        if client:
+            extra_args: dict[str, Any] = {}
+            if content_type:
+                extra_args["ContentType"] = content_type
+
+            client.upload_fileobj(
+                Fileobj=fileobj,
+                Bucket=settings.R2_BUCKET_NAME,
+                Key=key,
+                ExtraArgs=extra_args or None,
+            )
+            return key
+
+        dest = Path("uploads") / key
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with open(dest, "wb") as f_out:
+            shutil.copyfileobj(fileobj, f_out, length=1024 * 1024)
+        logger.warning("R2 is not configured; saved streamed fileobj to %s", dest)
+        return key
+
+    def download_to_file(self, *, key: str, local_path: str | Path) -> Path:
+        """
+        Download an object from Cloudflare R2 directly to a local SSD file (or local fallback).
+        Streams chunks directly to disk without holding the file in RAM.
+        """
+        dest = Path(local_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        client = self.get_client()
+        if client:
+            client.download_file(
+                Bucket=settings.R2_BUCKET_NAME,
+                Key=key,
+                Filename=str(dest),
+            )
+            return dest
+
+        src = Path("uploads") / key
+        if src.exists():
+            shutil.copyfile(src, dest)
+            return dest
+
+        raise RuntimeError(f"File {key} not found and Cloudflare R2 is not configured.")
+
     def upload_bytes(
         self, *, data: bytes, key: str, content_type: str | None = None
     ) -> str:
@@ -141,8 +226,6 @@ class StorageService:
             return key
 
         # Fallback when R2 is not configured
-        from pathlib import Path
-
         local_path = Path("uploads") / key
         local_path.parent.mkdir(parents=True, exist_ok=True)
         local_path.write_bytes(data)
@@ -161,8 +244,7 @@ class StorageService:
             )
             return response["Body"].read()
 
-        from pathlib import Path
-
+        # Local fallback
         local_path = Path("uploads") / key
         if local_path.exists():
             return local_path.read_bytes()
@@ -183,8 +265,6 @@ class StorageService:
             )
             yield from response["Body"].iter_chunks(chunk_size=chunk_size)
             return
-
-        from pathlib import Path
 
         local_path = Path("uploads") / key
         if local_path.exists():
