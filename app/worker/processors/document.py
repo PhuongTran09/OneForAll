@@ -74,12 +74,30 @@ class DocumentConvertProcessor(BaseProcessor):
                 "application/json",
             )
 
+        # 4c. XLSX sang PDF
+        if op == "xlsx-to-pdf":
+            sheet_name = sub_options.get("sheet_name")
+            title = sub_options.get("title", "Bảng tính Excel")
+            return (
+                file_converter_service.xlsx_to_pdf(
+                    input_data, sheet_name=sheet_name, title=title
+                ),
+                "application/pdf",
+            )
+
         # 5. PNG sang JPG
         if op in ("png-to-jpg", "png-to-jpeg"):
             quality = int(sub_options.get("quality", 95))
             return (
                 file_converter_service.png_to_jpg(input_data, quality=quality),
                 "image/jpeg",
+            )
+
+        # 5b. JPG sang PNG
+        if op in ("jpg-to-png", "jpeg-to-png"):
+            return (
+                file_converter_service.jpg_to_png(input_data),
+                "image/png",
             )
 
         # 6. JPG sang WEBP

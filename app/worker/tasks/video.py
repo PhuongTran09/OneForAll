@@ -1,5 +1,3 @@
-import asyncio
-import concurrent.futures
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -8,6 +6,7 @@ from app.repositories.job_repository import JobRepository
 from app.services.storage_service import storage_service
 from app.utils.logger import logger
 from app.worker.celery_app import CeleryQueue, celery_app
+from app.worker.lifecycle import run_in_worker_loop
 from app.worker.processors.video import video_audio_processor
 
 
@@ -26,10 +25,12 @@ async def _async_process_video_job(job_id: str) -> dict[str, Any]:
 
     try:
         input_bytes = b""
-        if job.input_key:
+        if url or operation in ("url_download", "download", "ytdlp"):
+            logger.info("[video-worker] Processing from URL: %s", url)
+        elif job.input_key and job.input_key != "string":
             logger.info("[video-worker] Downloading video from key: %s", job.input_key)
             input_bytes = storage_service.download_bytes(key=job.input_key)
-        elif not url:
+        else:
             raise ValueError("Neither input_key nor url was provided for video processing.")
 
         logger.info("[video-worker] Processing video %s: operation=%s", job_id, operation)
@@ -44,13 +45,15 @@ async def _async_process_video_job(job_id: str) -> dict[str, Any]:
         logger.info("[video-worker] Uploading video result to key: %s", output_key)
         storage_service.upload_bytes(data=output_bytes, key=output_key, content_type=content_type)
 
-        if job.input_key:
+        if job.input_key and job.input_key != "string":
             try:
                 storage_service.delete_file(key=job.input_key)
+                logger.info("[video-worker] Deleted input file: %s", job.input_key)
             except Exception as del_err:  # noqa: BLE001
                 logger.warning("[video-worker] Could not delete input file %s: %s", job.input_key, del_err)
 
-        expires_at = datetime.now(UTC) + timedelta(minutes=20)
+        # Final output có thời hạn tối đa 3 phút
+        expires_at = datetime.now(UTC) + timedelta(minutes=3)
         await repo.mark_completed(job, output_key=output_key, expires_at=expires_at)
         logger.info("[video-worker] Job %s completed! Expires at: %s", job_id, expires_at)
         return {
@@ -79,18 +82,7 @@ def process_video_job(job_id: str, **kwargs: Any) -> dict[str, Any]:
     Workloads: FFmpeg (transcoding, audio extraction, thumbnailing) & yt-dlp.
     """
     logger.info("[video-worker] Processing video job: %s", job_id)
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(
-                lambda: asyncio.run(_async_process_video_job(job_id))
-            ).result()
-
-    return asyncio.run(_async_process_video_job(job_id))
+    return run_in_worker_loop(_async_process_video_job(job_id))
 
 
 @celery_app.task(

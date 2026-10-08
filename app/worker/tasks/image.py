@@ -1,5 +1,3 @@
-import asyncio
-import concurrent.futures
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -8,6 +6,7 @@ from app.repositories.job_repository import JobRepository
 from app.services.storage_service import storage_service
 from app.utils.logger import logger
 from app.worker.celery_app import CeleryQueue, celery_app
+from app.worker.lifecycle import run_in_worker_loop
 from app.worker.processors.image import image_processor
 
 
@@ -49,7 +48,7 @@ async def _async_process_image_job(job_id: str) -> dict[str, Any]:
             except Exception as del_err:  # noqa: BLE001
                 logger.warning("[image-worker] Could not delete input file %s: %s", job.input_key, del_err)
 
-        expires_at = datetime.now(UTC) + timedelta(minutes=20)
+        expires_at = datetime.now(UTC) + timedelta(minutes=3)
         await repo.mark_completed(job, output_key=output_key, expires_at=expires_at)
         logger.info("[image-worker] Job %s completed! Expires at: %s", job_id, expires_at)
         return {
@@ -78,18 +77,7 @@ def process_image_job(job_id: str, **kwargs: Any) -> dict[str, Any]:
     Workloads: Pillow (resize, compress, format change, watermarking).
     """
     logger.info("[image-worker] Processing image job: %s", job_id)
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(
-                lambda: asyncio.run(_async_process_image_job(job_id))
-            ).result()
-
-    return asyncio.run(_async_process_image_job(job_id))
+    return run_in_worker_loop(_async_process_image_job(job_id))
 
 
 @celery_app.task(

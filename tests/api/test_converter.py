@@ -204,12 +204,23 @@ async def test_anonymous_convert_file_lifecycle(client: AsyncClient):
     assert 'attachment; filename="result.svg"' in direct_res.headers.get("content-disposition", "")
     assert direct_res.content == b"fake-file-content" or len(direct_res.content) > 0
 
-    # 5. Simulate expiration
-    job = await repo.get(job_id)
-    assert job is not None
-    await repo.mark_expired(job)
+    # 4.2 Khi download thành công, file và job được xóa ngay lập tức
+    assert await repo.get(job_id) is None
 
-    expired_res = await client.get(f"/api/v1/files/{job_id}/download")
+    # 5. Simulate expiration trên một job không được tải (sau 3 phút)
+    exp_job = await repo.create(
+        user_id="anonymous",
+        type="convert",
+        input_key=None,
+    )
+    past_expires = datetime.now(UTC) - timedelta(minutes=1)
+    await repo.mark_completed(
+        exp_job,
+        output_key=f"outputs/{exp_job.id}/result.svg",
+        expires_at=past_expires,
+    )
+
+    expired_res = await client.get(f"/api/v1/files/{exp_job.id}/download")
     assert expired_res.status_code == 410
 
 

@@ -573,6 +573,58 @@ class FileConverterService:
                 icc_profile=icc_profile,
             )
             return out.getvalue()
-    
+
+    # -------------------------------------------------------------------------
+    # 7. JPG sang PNG
+    # -------------------------------------------------------------------------
+    @_handle_errors("chuyển đổi JPG sang PNG")
+    def jpg_to_png(self, jpg_bytes: bytes) -> bytes:
+        """Chuyển đổi ảnh JPG/JPEG sang định dạng PNG.
+
+        :param jpg_bytes: Dữ liệu bytes ảnh JPG/JPEG.
+        :return: PNG bytes.
+        """
+        with self._open_image(jpg_bytes) as image:
+            out = io.BytesIO()
+            image.save(out, format="PNG")
+            return out.getvalue()
+
+    # -------------------------------------------------------------------------
+    # 8. XLSX sang PDF
+    # -------------------------------------------------------------------------
+    @_handle_errors("chuyển đổi XLSX sang PDF")
+    def xlsx_to_pdf(
+        self,
+        xlsx_bytes: bytes,
+        sheet_name: str | None = None,
+        title: str = "Bảng tính Excel",
+    ) -> bytes:
+        """Chuyển đổi bảng tính XLSX sang PDF qua HTML table rendering.
+
+        :param xlsx_bytes: Dữ liệu bytes file XLSX.
+        :param sheet_name: Tên sheet cần chuyển đổi.
+        :param title: Tiêu đề tài liệu.
+        :return: PDF bytes.
+        """
+        wb = self._load_workbook(xlsx_bytes)
+        try:
+            sheet = self._pick_sheet(wb, sheet_name)
+            rows_html: list[str] = []
+            for row in sheet.iter_rows(values_only=True):
+                cells = [self._plain_value(c) for c in row]
+                if all(c is None for c in cells):
+                    continue
+                cell_tags = "".join(
+                    f"<td>{html.escape(str(c) if c is not None else '')}</td>"
+                    for c in cells
+                )
+                rows_html.append(f"<tr>{cell_tags}</tr>")
+
+            table_html = f"<h1>{html.escape(title)}</h1><table>{''.join(rows_html)}</table>"
+            full_html = self._build_html_wrapper(table_html, title=title)
+            return self._render_html_to_pdf(full_html)
+        finally:
+            wb.close()
+
 
 file_converter_service = FileConverterService()

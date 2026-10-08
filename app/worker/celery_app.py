@@ -3,7 +3,12 @@ from enum import StrEnum
 from celery import Celery
 from kombu import Exchange, Queue
 
+import app.worker.lifecycle  # noqa: F401 - Register persistent event loop lifecycle signals
 from app.core.config import settings
+from app.worker.lifecycle import (
+    get_worker_loop_manager,
+    run_in_worker_loop,
+)
 
 
 class CeleryQueue(StrEnum):
@@ -87,3 +92,13 @@ celery_app.conf.update(
         },
     },
 )
+
+__all__ = [
+    "CELERY_QUEUES",
+    "CELERY_ROUTES",
+    "CeleryQueue",
+    "celery_app",
+    "default_exchange",
+    "get_worker_loop_manager",
+    "run_in_worker_loop",
+]

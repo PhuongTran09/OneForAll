@@ -1,5 +1,3 @@
-import asyncio
-import concurrent.futures
 from datetime import UTC, datetime
 from typing import Any
 
@@ -7,6 +5,7 @@ from app.repositories.job_repository import JobRepository
 from app.services.storage_service import storage_service
 from app.utils.logger import logger
 from app.worker.celery_app import celery_app
+from app.worker.lifecycle import run_in_worker_loop
 
 
 async def _async_cleanup_expired_jobs() -> dict[str, Any]:
@@ -53,8 +52,12 @@ async def _async_cleanup_expired_jobs() -> dict[str, Any]:
                     exc,
                 )
 
-        # 3. Cập nhật Database: status = 'expired'
-        await repo.mark_expired(job)
+        # 3. DELETE job khỏi Database (idempotent)
+        try:
+            await repo.delete(job.id)
+            logger.info("[cleanup-worker] Deleted expired job record: %s", job.id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[cleanup-worker] Failed to delete job record %s: %s", job.id, exc)
         cleaned_count += 1
 
     logger.info(
@@ -70,15 +73,4 @@ def cleanup_expired_jobs_task() -> dict[str, Any]:
     Periodic task chạy định kỳ mỗi 1 phút để dọn dẹp file hết hạn.
     """
     logger.info("[cleanup-worker] Starting periodic cleanup job check...")
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(
-                lambda: asyncio.run(_async_cleanup_expired_jobs())
-            ).result()
-
-    return asyncio.run(_async_cleanup_expired_jobs())
+    return run_in_worker_loop(_async_cleanup_expired_jobs())

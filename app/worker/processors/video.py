@@ -123,6 +123,8 @@ class VideoAudioProcessor(BaseProcessor):
             else:
                 cmd.extend(["-f", f"bestvideo[ext={target_format}]+bestaudio/best[ext={target_format}]/best"])
 
+            cmd.extend(["--impersonate", "chrome"])
+
             logger.info("Executing yt-dlp command for %s", url)
             try:
                 # Use Python yt_dlp package directly if installed
@@ -133,6 +135,12 @@ class VideoAudioProcessor(BaseProcessor):
                     "noplaylist": True,
                     "quiet": True,
                 }
+                try:
+                    from yt_dlp.networking.impersonate import ImpersonateTarget
+                    ydl_opts["impersonate"] = ImpersonateTarget.from_str("chrome")
+                except Exception:  # noqa: BLE001
+                    pass
+
                 if is_audio:
                     ydl_opts["format"] = "bestaudio/best"
                     ydl_opts["postprocessors"] = [
@@ -152,14 +160,21 @@ class VideoAudioProcessor(BaseProcessor):
                 logger.warning("yt-dlp Python API error: %s, falling back to CLI", exc)
                 cmd_str = shutil.which("yt-dlp") or "yt-dlp"
                 cmd[0] = cmd_str
+                if url not in cmd:
+                    cmd.append(url)
                 self._run_process(cmd)
 
-            # Find generated output file in tmp_dir
-            files = [os.path.join(tmp_dir, f) for f in os.listdir(tmp_dir)]
+            # Find generated output file in tmp_dir (ignoring any .part, .ytdl, or temp files)
+            files = [
+                os.path.join(tmp_dir, f)
+                for f in os.listdir(tmp_dir)
+                if not f.endswith((".part", ".ytdl", ".tmp"))
+            ]
             if not files:
                 raise AppException(status_code=500, detail="yt-dlp downloaded nothing")
 
-            target_file = files[0]
+            matching = [f for f in files if f.lower().endswith(f".{target_format}")]
+            target_file = matching[0] if matching else files[0]
             with open(target_file, "rb") as f:
                 content = f.read()
 

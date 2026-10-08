@@ -151,3 +151,12 @@ class JobRepository:
                 if exp <= now_utc:
                     expired.append(job)
         return expired
+
+    async def delete(self, job_id: str) -> bool:
+        """Delete job record from Database (idempotent)."""
+        client = await self._get_client()
+        try:
+            await client.table("jobs").delete().eq("id", job_id).execute()
+        except Exception:  # noqa: BLE001
+            pass
+        return True
