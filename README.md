@@ -1,6 +1,6 @@
-# OneForAll - FastAPI Backend Service & BiRefNet AI Background Removal
+# OneForAll - FastAPI Backend Service & Multi-Format Media Processing
 
-Kiến trúc backend hiện đại, mở rộng được (clean layered architecture) dựa trên **FastAPI**, **Supabase Auth & Supabase PostgreSQL (PostgREST)**, **Pydantic v2**, **Celery + Redis**, **Cloudflare R2 Storage**, và hệ thống tách nền AI **BiRefNet**.
+Kiến trúc backend hiện đại, mở rộng được (clean layered architecture) dựa trên **FastAPI**, **Supabase Auth & Supabase PostgreSQL (PostgREST)**, **Pydantic v2**, **Celery + Redis**, **Cloudflare R2 Storage**, hệ thống xử lý Media (**yt-dlp**, **FFmpeg**), và tách nền AI **BiRefNet**.
 
 ---
 
@@ -10,22 +10,25 @@ Kiến trúc backend hiện đại, mở rộng được (clean layered architec
 OneForAll/
 ├── app/
 │   ├── api/
-│   │   ├── deps.py                 # Dependencies (Supabase JWT auth, CurrentUser, require_superuser)
+│   │   ├── deps.py                 # Dependencies (Supabase JWT auth ES256/HS256, CurrentUser)
 │   │   ├── __init__.py
 │   │   └── v1/
 │   │       ├── endpoints/
-│   │       │   ├── bg_removal.py   # AI Remove Background endpoint (/api/v1/remove-bg)
-│   │       │   ├── converter.py    # File & Document converter endpoints (/api/v1/convert/*)
-│   │       │   ├── files.py        # Cloudflare R2 file management & presigned URLs
+│   │       │   ├── convert_file.py # Chuyển đổi tài liệu & file (/api/v1/convert-file, /convert)
+│   │       │   ├── files.py        # Quản lý R2, presigned URLs, streaming download & /consumed
 │   │       │   ├── health.py       # Health check API & GPU/Model status (/health, /api/v1/health)
+│   │       │   ├── image.py        # Xử lý hình ảnh (resize, compress, crop, remove_bg)
+│   │       │   ├── jobs.py         # Tra cứu tiến độ Job (/api/v1/jobs/{id})
+│   │       │   ├── media.py        # Xử lý media/video/audio & URL YouTube/TikTok (/api/v1/media/process)
+│   │       │   ├── payments.py     # Thanh toán PayOS & Webhook (/api/v1/payments/*)
 │   │       │   └── users.py        # User & Profile CRUD API routes (/api/v1/users)
 │   │       ├── router.py           # V1 main router aggregator
 │   │       └── __init__.py
 │   ├── core/
 │   │   ├── config.py               # Pydantic Settings & Supabase/R2/Redis configuration
 │   │   ├── exceptions.py           # Custom HTTP & App exceptions
-│   │   ├── security.py             # Supabase JWT token verification
-│   │   ├── supabase.py             # Async & Sync Supabase clients
+│   │   ├── security.py             # Supabase JWT token verification (hỗ trợ ES256 JWKS & HS256)
+│   │   ├── supabase.py             # Async & Sync Supabase PostgREST clients
 │   │   └── __init__.py
 │   ├── models/
 │   │   ├── base.py                 # Pydantic base models & TimestampMixin
@@ -34,93 +37,149 @@ OneForAll/
 │   │   └── __init__.py
 │   ├── repositories/
 │   │   ├── base.py                 # Generic BaseRepository PostgREST operations
-│   │   ├── job_repository.py       # JobRepository (PostgREST)
+│   │   ├── job_repository.py       # JobRepository (hỗ trợ get, create, update, delete)
 │   │   ├── user_repository.py      # UserRepository (PostgREST profiles)
 │   │   └── __init__.py
 │   ├── schemas/
 │   │   ├── common.py               # Standard response & pagination schemas
-│   │   ├── user.py                 # User request/response DTOs (UUID-based)
+│   │   ├── file.py                 # Presigned URL schemas
+│   │   ├── job.py                  # Job request/response DTOs
+│   │   ├── payment.py              # PayOS payment schemas
+│   │   ├── user.py                 # User request/response DTOs
 │   │   └── __init__.py
 │   ├── services/
-│   │   ├── bg_removal_service.py   # AI Service: BiRefNet-Lite inference & Image processing
-│   │   ├── file_service.py         # Cloudflare R2 storage service
-│   │   ├── job_service.py          # Background Job management service
+│   │   ├── file_converter_service.py # Core CPU document & vector conversions
+│   │   ├── format_detector.py      # Nhận diện tự động MIME type, extension, file signature
+│   │   ├── job_service.py          # Background Job management & enqueue service
+│   │   ├── payment_service.py      # PayOS payment service
+│   │   ├── storage_service.py      # Cloudflare R2 / S3 storage service (stream, delete, presigned)
+│   │   ├── subscription_service.py # Kiểm tra hạn mức người dùng
+│   │   ├── task_queue_service.py   # Celery queue dispatching
 │   │   ├── user_service.py         # User profile management service
 │   │   └── __init__.py
 │   ├── worker/                     # Celery background workers
-│   │   ├── celery_app.py           # Celery application & queues config
+│   │   ├── celery_app.py           # Celery queues, routing & Beat scheduler
+│   │   ├── lifecycle.py            # Quản lý persistent worker event loop
+│   │   ├── processors/             # Core workload processors
+│   │   │   ├── base.py
+│   │   │   ├── document.py         # Document & vector processor
+│   │   │   ├── gpu.py              # BiRefNet GPU processor
+│   │   │   ├── image.py            # Pillow image processor
+│   │   │   └── video.py            # FFmpeg & yt-dlp media processor (impersonation)
 │   │   └── tasks/
-│   │       ├── cleanup.py          # Periodic R2/Job cleanup task
-│   │       └── convert.py          # Async file conversion worker task
+│   │       ├── cleanup.py          # Định kỳ dọn dẹp R2 output & DELETE job hết hạn (1 phút/lần)
+│   │       ├── convert.py          # Document convert worker task
+│   │       ├── gpu.py              # AI GPU background removal task
+│   │       ├── image.py            # Image processing task
+│   │       └── video.py            # Video & URL download task (YouTube, TikTok)
 │   ├── utils/
 │   │   ├── logger.py               # Centralized logging configuration
 │   │   └── __init__.py
-│   ├── main.py                     # FastAPI application entry point, lifespan & CORS
+│   ├── main.py                     # FastAPI entry point, lifespan, CORS & routers
 │   └── __init__.py
 ├── supabase/                       # Supabase database schemas & triggers
 │   └── schema.sql                  # DDL for public.profiles, public.jobs, RLS & triggers
-├── tests/                          # Automated tests with pytest
+├── tests/                          # Automated tests with pytest (69+ tests passed)
 │   ├── api/
-│   │   ├── test_auth.py            # Test Supabase JWT verification & CurrentUser
+│   │   ├── test_auth.py            # Test Supabase JWT verification
 │   │   ├── test_bg_removal.py      # Test validation cho endpoint remove-bg
+│   │   ├── test_convert_autodetect.py # Test tự động nhận diện định dạng nguồn
 │   │   ├── test_converter.py       # Test API chuyển đổi định dạng
 │   │   ├── test_health.py          # Test kiểm tra endpoint health
+│   │   ├── test_image_video_multipart.py # Test multipart upload cho image và media
+│   │   ├── test_storage_optimization.py # Test tối ưu storage: stream download, abort retry, TTL
 │   │   └── test_users.py           # Test CRUD users với Supabase profiles & UUID
-│   ├── test_convert_worker.py      # Test Celery conversion task
 │   ├── conftest.py                 # In-memory Supabase PostgREST/Auth mock fixtures
-│   └── __init__.py
+│   ├── test_convert_worker.py      # Test Celery conversion & cleanup task
+│   ├── test_processors.py          # Test các processors (vtracer, yt-dlp, ffmpeg, birefnet)
+│   ├── test_storage_service.py     # Test Cloudflare R2 storage service
+│   ├── test_worker_lifecycle.py    # Test persistent event loop lifecycle
+│   └── test_workers_queues.py      # Test Celery queues routing
+├── API_TEST_CASES.txt              # Danh sách cURL test cases mẫu toàn bộ API
 ├── .env.example                    # Sample environment variables
-├── .env                            # Local environment variables
-├── .gitignore                      # Git ignore file
-├── alembic.ini                     # Alembic migration configuration
-├── docker-compose.yml              # Docker Compose (API + PostgreSQL)
-├── Dockerfile                      # Production Docker container
-├── pyproject.toml                  # Project metadata & pytest configuration
-├── requirements.txt                # Production & development dependencies
-└── README.md                       # Project documentation
+├── pyproject.toml                  # Project metadata & dependencies
+├── requirements.txt                # Production dependencies
+└── README.md                       # Tài liệu dự án
 ```
 
 ---
 
-## 🏗️ Kiến Trúc Chuyển Đổi Không Đồng Bộ (Asynchronous Job System)
+## 🏗️ Kiến Trúc Hệ Thống (Architecture & Workflows)
 
-Hệ thống tuân thủ mô hình **API → Service → Repository → Worker → Processor**:
-- **Client**: Tải file hoặc cung cấp `input_key` / `url` tới API `/api/v1/convert-file` (hoặc `/api/v1/convert`), `/api/v1/image/process`, `/api/v1/video/jobs`.
-- **FastAPI Endpoint**: Validate request, khởi tạo Job trong Supabase Database và ủy thác sang `JobService`.
-- **JobService & TaskQueueService**: Lưu thông tin Job (`PENDING`) và đẩy tác vụ vào hàng đợi Celery (Redis broker) theo từng queue chuyên biệt:
-  - `convert`: Document & vector conversion (`LibreOffice`, `vtracer`, `xhtml2pdf`, `docx`).
+Hệ thống tuân thủ mô hình **API → Service → Repository → Celery Worker → Processor**:
+- **Client**: Tải file hoặc cung cấp `input_key` / `url` (YouTube, TikTok) tới:
+  - `/api/v1/media/process`: Xử lý video, audio, URL download (hỗ trợ cả alias `/video/process`, `/video/jobs`).
+  - `/api/v1/image/process`: Nén, đổi kích thước, tách nền AI hình ảnh.
+  - `/api/v1/convert-file` (alias `/convert`): Chuyển đổi định dạng tài liệu, tự động nhận diện format nguồn.
+- **FastAPI Endpoint**: Nhận request, tạo bản ghi Job trong database Supabase (`status: queued`) và đẩy task vào Celery queue chuyên biệt qua `JobService` & `TaskQueueService`.
+- **Celery Queues**:
+  - `convert`: Document & vector conversion (`vtracer`, `xhtml2pdf`, `docx`, `openpyxl`).
   - `image`: Xử lý ảnh Pillow (resize, compress, format convert).
-  - `video`: Xử lý video/âm thanh FFmpeg & tải/trích xuất từ URL (`yt-dlp`).
-  - `gpu`: Mô hình AI (tách nền `BiRefNet` trên GPU CUDA).
-- **Worker & Processor**: Worker nhận task, tải dữ liệu từ Storage, gọi Processor tương ứng (`DocumentConvertProcessor`, `ImageProcessProcessor`, `VideoAudioProcessor`, `GpuAiProcessor`), tải kết quả lên Cloudflare R2 / Storage và cập nhật trạng thái Job (`COMPLETED` / `FAILED`).
-- **Client Polling & Download**: Client kiểm tra trạng thái tại `GET /api/v1/jobs/{job_id}` và tải file kết quả tại `GET /api/v1/files/{job_id}/download` (hỗ trợ direct stream, 307 redirect hoặc presigned URL).
+  - `video`: Xử lý video/audio FFmpeg & tải/trích xuất từ URL bằng `yt-dlp` + `curl-cffi` (giả lập Chrome).
+  - `gpu`: Tách nền AI `BiRefNet` trên GPU CUDA.
+- **Worker & Processor**:
+  - Tải file từ storage hoặc tải từ URL vào thư mục tạm `tmp_dir` local.
+  - Xử lý hoàn toàn tại local, tự động dọn dẹp triệt để bằng khối `finally` (`shutil.rmtree`).
+  - Chỉ upload duy nhất file kết quả cuối cùng lên Cloudflare R2: `outputs/{job_id}/result.{ext}`.
+  - Xóa ngay file input gốc trên R2 (nếu có).
+  - Đặt thời hạn lưu trữ `expires_at = NOW() + 3 phút`.
+- **Client Polling & Download**:
+  - Tra cứu tiến độ tại `GET /api/v1/jobs/{job_id}`.
+  - Tải file kết quả tại `GET /api/v1/files/{job_id}/download` (hỗ trợ binary stream, presigned URL hoặc redirect 307).
+
+---
+
+## 💾 Chính Sách Tối Ưu Storage (R2 & Database TTL)
+
+Nhằm tối ưu chi phí lưu trữ Cloudflare R2, băng thông và dung lượng đĩa:
+
+```text
+Temporary & Intermediate files
+    → Chỉ lưu cục bộ trong tmp_dir của worker
+    → Xóa sạch ngay lập tức qua block `finally` (không bao giờ đẩy lên R2)
+
+Final Output
+    → Lưu tại: outputs/{job_id}/result.{ext}
+    → Thời hạn tối đa: 3 phút (expires_at)
+    → User tải trực tiếp qua stream thành công (100%):
+          ↳ Xóa ngay output trên R2
+          ↳ DELETE job khỏi Database
+    → User ngắt kết nối / tải dở giữa chừng (disconnect, abort):
+          ↳ Giữ nguyên file trên R2 và job trong DB để user retry trong 3 phút
+    → User không tải:
+          ↳ Celery Beat quét định kỳ mỗi 1 phút:
+          ↳ Xóa output trên R2 và DELETE job khỏi Database
+
+Presigned URL Download:
+    → Client có thể gọi POST /api/v1/files/{job_id}/consumed sau khi tải xong để dọn dẹp ngay.
+```
 
 ---
 
 ## 🔄 Các Tính Năng Chuyển Đổi Hỗ Trợ
 
-1. **File & Document Conversion**:
-   - `PNG ➔ SVG`: Vector hóa qua `vtracer`.
-   - `DOC/DOCX ➔ PDF`: Chuyển đổi DOCX sang PDF chuẩn A4.
-   - `TXT ➔ PDF`: PDF hỗ trợ Unicode tiếng Việt.
-   - `TXT ➔ DOC/DOCX`: Xuất file Microsoft Word (.docx).
+1. **Media Processing (`/api/v1/media/process`)**:
+   - **YouTube sang MP3**: Trích xuất âm thanh từ link YouTube bằng `yt-dlp`.
+   - **YouTube sang MP4**: Tải video chất lượng cao từ YouTube.
+   - **TikTok sang MP3 / MP4**: Vượt qua bot-detection của TikTok qua `curl-cffi` browser impersonation (`chrome`).
+   - **Video Transcode**: Chuyển mã MP4, MKV, AVI, WEBM qua FFmpeg (libx264, aac, tuỳ chỉnh CRF).
+   - **Extract Audio**: Tách audio từ file video sang MP3, WAV, AAC.
+   - **Thumbnail Extraction**: Cắt ảnh đại diện từ video tại timestamp bất kỳ.
+
+2. **File & Document Conversion (`/api/v1/convert-file`, `/convert`)**:
+   - Tự động nhận diện định dạng nguồn (không cần gửi tham số `from`).
+   - `PNG ➔ SVG`: Vector hóa bằng thuật toán `vtracer`.
+   - `DOC/DOCX ➔ PDF`: Chuyển đổi DOCX sang PDF chuẩn khổ A4.
+   - `TXT ➔ PDF`: Xuất PDF hỗ trợ font Unicode tiếng Việt.
+   - `TXT ➔ DOC/DOCX`: Xuất tài liệu Microsoft Word (.docx).
    - `XLSX ➔ CSV`: UTF-8 with BOM tương thích Excel tiếng Việt.
-   - `XLSX ➔ JSON`: Trích xuất bảng tính sang JSON array.
-   - `PNG ➔ JPG/JPEG`: Tự động thay nền trong suốt với màu tùy chọn.
-   - `JPG ➔ WEBP`: Nén định dạng WEBP chất lượng cao / lossless.
+   - `XLSX ➔ JSON`: Trích xuất dữ liệu bảng tính sang JSON array.
 
-2. **Image Processing**:
-   - Nén ảnh, thay đổi kích thước (resize giữ tỉ lệ), crop, đổi định dạng ảnh.
-
-3. **Video & Audio Processing**:
-   - Chuyển mã định dạng video (MP4, MKV, AVI, WEBM qua FFmpeg).
-   - Trích xuất âm thanh từ video sang MP3, WAV, AAC.
-   - Chụp ảnh thumbnail tại thời điểm bất kỳ.
-   - Tải video và trích xuất nhạc từ URL (YouTube, TikTok, ...) bằng `yt-dlp` thành MP3/MP4.
-
-4. **AI Background Removal**:
-   - Tách nền ảnh tự động bằng mô hình BiRefNet trên GPU CUDA.
-
+3. **Image Processing (`/api/v1/image/process`)**:
+   - Nén ảnh (compress chất lượng tuỳ chọn).
+   - Thay đổi kích thước (resize giữ tỉ lệ aspect ratio).
+   - Cắt ảnh (crop) và đổi định dạng (PNG, JPG, WEBP).
+   - Tách nền ảnh tự động bằng AI BiRefNet.
 
 ---
 
@@ -142,66 +201,67 @@ source .venv/bin/activate
 
 ```bash
 pip install -r requirements.txt
+pip install -U yt-dlp curl-cffi
 ```
 
-*(Lưu ý: Nếu dùng GPU NVIDIA, cài đặt PyTorch hỗ trợ CUDA phù hợp từ [pytorch.org](https://pytorch.org))*
+*(Lưu ý: Đảm bảo máy tính đã cài đặt `ffmpeg` và có trong biến môi trường `PATH`).*
 
-### 3. Cấu hình biến môi trường
+### 3. Cấu hình biến môi trường (.env)
 
 ```bash
 cp .env.example .env
 ```
-Điền các giá trị Supabase từ Project Settings:
+Điền các giá trị:
 - `SUPABASE_URL`: `https://<project-ref>.supabase.co`
 - `SUPABASE_KEY`: Anon/public API key
 - `SUPABASE_SERVICE_ROLE_KEY`: Service role key bí mật
-- `SUPABASE_JWT_SECRET`: JWT Secret (dùng để verify chữ ký HS256 từ Supabase Auth)
+- `SUPABASE_JWT_SECRET`: (Tuỳ chọn) Secret HS256 nếu có
+- `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`: Cấu hình Cloudflare R2
+- `CELERY_BROKER_URL`: `redis://localhost:6379/0`
+- `CELERY_RESULT_BACKEND`: `redis://localhost:6379/1`
 
-### 4. Khởi tạo Database Supabase (Schema & RLS)
+### 4. Khởi chạy ứng dụng
 
-Chạy file SQL migration [`supabase/schema.sql`](supabase/schema.sql) trong **Supabase SQL Editor** trên Dashboard của dự án:
-- Tạo bảng `public.profiles` liên kết với `auth.users.id` (UUID).
-- Tạo bảng `public.jobs` lưu trữ lịch sử tác vụ chuyển đổi & AI.
-- Tạo Trigger `on_auth_user_created` tự động tạo profile khi người dùng đăng ký qua Supabase Auth.
-- Kích hoạt Row Level Security (RLS) bảo vệ dữ liệu.
-
-### 5. Chạy ứng dụng nhanh (Quick Start)
-
-Dự án đã tích hợp sẵn lệnh chạy trọn gói (FastAPI + Celery Worker + Celery Beat dọn dẹp file tự động):
-
-#### Cách 1: Chạy bằng 1 lệnh duy nhất (Khuyên dùng trên Windows)
-```cmd
-start.bat
-```
-hoặc bằng PowerShell:
+#### Chạy toàn bộ bằng lệnh độc lập (Khuyên dùng khi test local):
 ```powershell
-.\start.ps1
-```
-hoặc bằng Python CLI trực tiếp:
-```bash
-python run.py
-```
-*(Script sẽ tự động khởi chạy FastAPI, Celery Worker và Celery Beat. Khi muốn dừng, chỉ cần nhấn `Ctrl + C` để dừng toàn bộ an toàn).*
+# 1. Khởi chạy Redis Broker (nếu dùng Docker):
+docker run -d -p 6379:6379 redis:alpine
 
-#### Cách 2: Chạy từng service riêng biệt
-```bash
-python run.py api        # Chỉ chạy FastAPI Web Server (Uvicorn)
-python run.py worker     # Chỉ chạy Celery Worker (tự động cấu hình solo pool trên Windows)
-python run.py beat       # Chỉ chạy Celery Beat (scheduler dọn dẹp file R2 hết hạn)
-python run.py test       # Chạy nhanh bộ test tự động (pytest)
-```
+# 2. Khởi chạy Celery Worker (trên Windows dùng solo pool):
+celery -A app.worker.celery_app worker -Q convert,image,video,gpu -l info -P solo
 
-#### Cách 3: Chạy toàn bộ hệ thống bằng Docker Compose
-```bash
-docker compose up --build
-# Hoặc: python run.py docker
+# 3. Khởi chạy Celery Beat (Scheduler dọn dẹp file 1 phút/lần):
+celery -A app.worker.celery_app beat -l info
+
+# 4. Khởi chạy FastAPI Backend:
+uvicorn app.main:app --reload --port 8000
 ```
 
 ---
 
-### 6. Tài liệu API (Interactive Docs)
+## 🧪 Kiểm Thử Tự Động & Thủ Công
 
-Truy cập tài liệu API tự động:
-- **Swagger UI**: [http://localhost:8000/api/v1/docs](http://localhost:8000/api/v1/docs)
-- **ReDoc**: [http://localhost:8000/api/v1/redoc](http://localhost:8000/api/v1/redoc)
-- **Health check**: [http://localhost:8000/health](http://localhost:8000/health)
+### 1. Chạy Automated Tests (Pytest)
+```powershell
+pytest -v
+```
+Toàn bộ **69 test cases** bao gồm unit test, component test, multipart endpoint test, mock YouTube/TikTok URL processing, stream retry & storage optimization đều chạy tự động.
+
+### 2. Danh Sách Lệnh cURL Test Thủ Công
+Xem chi tiết file [**`API_TEST_CASES.txt`**](API_TEST_CASES.txt) để copy-paste các lệnh cURL test cho từng chức năng:
+- Health check & Profile
+- YouTube sang MP3 / MP4
+- TikTok sang MP3 / MP4
+- Upload Video, Extract Audio, Thumbnail
+- Chuyển đổi DOCX, PNG sang SVG, XLSX
+- Nén ảnh, Resize ảnh, Tách nền AI
+- Tải file Stream (`?direct=true`) & Xác nhận consumed
+
+---
+
+## 📚 Tài Liệu API Trực Quan (Interactive Docs)
+
+Sau khi server khởi động:
+- **Swagger UI**: [http://localhost:8000/docs](http://localhost:8000/docs)
+- **ReDoc**: [http://localhost:8000/redoc](http://localhost:8000/redoc)
+- **Health Check**: [http://localhost:8000/api/v1/health](http://localhost:8000/api/v1/health)
