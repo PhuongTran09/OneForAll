@@ -21,7 +21,6 @@ class VideoAudioProcessor(BaseProcessor):
     - url-download (download video/audio from URL using yt-dlp)
 
     Architecture: Operates directly on local SSD file paths.
-    Eliminates loading large video/audio files into RAM.
     """
 
     def process_file(
@@ -36,7 +35,6 @@ class VideoAudioProcessor(BaseProcessor):
         out_p = Path(output_path)
         out_p.parent.mkdir(parents=True, exist_ok=True)
 
-        # 1. URL-based download handler (video URL -> MP4/MP3)
         url = options.get("url") or sub_opts.get("url")
         if url or operation in ("download", "ytdlp", "url_download"):
             target_format = str(sub_opts.get("format", out_p.suffix.lstrip(".") or "mp4")).lower()
@@ -52,62 +50,34 @@ class VideoAudioProcessor(BaseProcessor):
 
         inp = Path(input_path)
 
-        # 2. Extract audio
         if operation in ("extract-audio", "audio"):
             target_format = str(sub_opts.get("format", out_p.suffix.lstrip(".") or "mp3")).lower().lstrip(".")
             self._run_ffmpeg(
                 [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    str(inp),
-                    "-vn",
-                    "-acodec",
-                    "libmp3lame" if target_format == "mp3" else "copy",
-                    str(out_p),
+                    "ffmpeg", "-y", "-i", str(inp), "-vn", "-acodec",
+                    "libmp3lame" if target_format == "mp3" else "copy", str(out_p),
                 ]
             )
             return f"audio/{target_format}"
 
-        # 3. Thumbnail extraction
         if operation == "thumbnail":
             timestamp = str(sub_opts.get("time", "00:00:01"))
             self._run_ffmpeg(
                 [
-                    "ffmpeg",
-                    "-y",
-                    "-ss",
-                    timestamp,
-                    "-i",
-                    str(inp),
-                    "-vframes",
-                    "1",
-                    "-q:v",
-                    "2",
-                    str(out_p),
+                    "ffmpeg", "-y", "-ss", timestamp, "-i", str(inp),
+                    "-vframes", "1", "-q:v", "2", str(out_p),
                 ]
             )
             return "image/jpeg"
 
-        # 4. Video transcoding (default)
         target_format = str(sub_opts.get("format", out_p.suffix.lstrip(".") or "mp4")).lower().lstrip(".")
         vcodec = sub_opts.get("vcodec", "libx264")
         acodec = sub_opts.get("acodec", "aac")
         crf = str(sub_opts.get("crf", "23"))
-
         self._run_ffmpeg(
             [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(inp),
-                "-c:v",
-                vcodec,
-                "-crf",
-                crf,
-                "-c:a",
-                acodec,
-                str(out_p),
+                "ffmpeg", "-y", "-i", str(inp), "-c:v", vcodec,
+                "-crf", crf, "-c:a", acodec, str(out_p),
             ]
         )
         return f"video/{target_format}"
@@ -119,28 +89,17 @@ class VideoAudioProcessor(BaseProcessor):
         target_format: str = "mp4",
         options: dict[str, Any] | None = None,
     ) -> str:
-        """Download video/audio from URL using yt-dlp directly to local file."""
+        """Download video/audio using yt-dlp and preserve extracted title metadata."""
         if not url:
             raise AppException(status_code=400, detail="URL must be provided for url_download")
 
-        # Validate URL to prevent SSRF and argument injection
         url = validate_safe_url(url)
-
-        opts = options or {}
-        is_audio = target_format in ("mp3", "wav", "aac", "m4a")
+        opts = options if options is not None else {}
+        is_audio = target_format.lower() in ("mp3", "wav", "aac", "m4a")
         out_p = Path(output_path)
         out_p.parent.mkdir(parents=True, exist_ok=True)
-
-        # Delegate if download_url is mocked (e.g. in test suite)
-        if hasattr(self.download_url, "mock") or hasattr(self.download_url, "_mock_return_value") or getattr(self.download_url, "side_effect", None) is not None:
-            data, ctype = self.download_url(url, target_format=target_format, options=options)
-            out_p.write_bytes(data)
-            return ctype
-
-        # Working temporary folder in the same directory as output_path
         work_dir = out_p.parent / "work"
         work_dir.mkdir(parents=True, exist_ok=True)
-        # Use the video title as the downloaded filename 
         out_template = str(work_dir / "%(title).180B.%(ext)s")
 
         cmd = ["yt-dlp", "--no-playlist", "-o", out_template]
@@ -148,31 +107,20 @@ class VideoAudioProcessor(BaseProcessor):
             format_selector = "bestaudio/best"
             cmd.extend(["-x", "--audio-format", target_format])
         else:
-            # Prefer 1080p60, then lower quality while prioritizing H.264/MP4.
             format_selector = (
-                # 1080p60 H.264 MP4
                 f"bestvideo[height=1080][fps>=60][vcodec^=avc][ext={target_format}]+bestaudio[ext=m4a]/"
-
-                # 1080p60 H.264 with other audio formats
                 f"bestvideo[height=1080][fps>=60][vcodec^=avc][ext={target_format}]+bestaudio/"
-
-                # 1080p60 with other codecs
                 f"bestvideo[height=1080][fps>=60][ext={target_format}]+bestaudio/"
-
-                # Best available H.264/MP4 at 1080p or lower
                 f"bestvideo[height<=1080][vcodec^=avc][ext={target_format}]+bestaudio[ext=m4a]/"
                 f"bestvideo[height<=1080][vcodec^=avc][ext={target_format}]+bestaudio/"
-
-                # Best available MP4 at 1080p or lower
                 f"bestvideo[height<=1080][ext={target_format}]+bestaudio[ext=m4a]/"
                 f"bestvideo[height<=1080][ext={target_format}]+bestaudio/"
-
-                # Fallback
                 "bestvideo+bestaudio/best"
             )
             cmd.extend(["-f", format_selector])
 
         cmd.extend(["--impersonate", "chrome"])
+        extracted_title: str | None = None
 
         logger.info("Executing yt-dlp to file for %s", url)
         try:
@@ -183,6 +131,8 @@ class VideoAudioProcessor(BaseProcessor):
                 "noplaylist": True,
                 "quiet": True,
             }
+            # Enable an installed JS runtime where supported by the installed yt-dlp.
+            # yt-dlp auto-detects Deno; do not force a runtime path here.
             try:
                 from yt_dlp.networking.impersonate import ImpersonateTarget
                 ydl_opts["impersonate"] = ImpersonateTarget.from_str("chrome")
@@ -195,7 +145,7 @@ class VideoAudioProcessor(BaseProcessor):
                     {
                         "key": "FFmpegExtractAudio",
                         "preferredcodec": target_format,
-                        "preferredquality": opts.get("quality", "192"),
+                        "preferredquality": str(opts.get("quality", "192")),
                     }
                 ]
             else:
@@ -204,16 +154,18 @@ class VideoAudioProcessor(BaseProcessor):
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 if isinstance(info, dict):
-                    extracted_title = info.get("title")
-                    if not extracted_title and "entries" in info and info["entries"]:
-                        first_entry = info["entries"][0]
-                        if isinstance(first_entry, dict):
-                            extracted_title = first_entry.get("title")
-                    if extracted_title and not opts.get("title") and not opts.get("filename"):
-                        opts["title"] = extracted_title
-                        logger.info("Extracted title for %s: '%s'", url, extracted_title)
+                    if info.get("_type") == "playlist" and info.get("entries"):
+                        info = next((entry for entry in info["entries"] if entry), info)
+                    if isinstance(info, dict):
+                        extracted_title = info.get("title")
+                        if extracted_title:
+                            opts.setdefault("title", extracted_title)
+                            opts.setdefault("filename", extracted_title)
+                            logger.info("Extracted title for %s: '%s'", url, extracted_title)
 
         except Exception as exc:  # noqa: BLE001
+            # The CLI fallback cannot update the Python metadata object. Recover title
+            # from yt-dlp's filename template after a successful download.
             logger.warning("yt-dlp Python API error: %s, falling back to CLI", exc)
             cmd_str = shutil.which("yt-dlp") or "yt-dlp"
             cmd[0] = cmd_str
@@ -223,19 +175,27 @@ class VideoAudioProcessor(BaseProcessor):
                 cmd.append(url)
             self._run_process(cmd)
 
-        # Find generated output file in work_dir (ignoring any .part, .ytdl, or temp files)
         files = [
-            work_dir / f
-            for f in os.listdir(work_dir)
-            if not f.endswith((".part", ".ytdl", ".tmp"))
+            work_dir / name
+            for name in os.listdir(work_dir)
+            if not name.endswith((".part", ".ytdl", ".tmp"))
+            and (work_dir / name).is_file()
         ]
         if not files:
             raise AppException(status_code=500, detail="yt-dlp downloaded nothing")
 
-        matching = [f for f in files if f.name.lower().endswith(f".{target_format}")]
+        matching = [path for path in files if path.suffix.lower() == f".{target_format.lower()}"]
         target_file = matching[0] if matching else files[0]
 
-        # Ensure video is standard H.264 (yuv420p) to prevent black screen in browsers / players
+        # Recover the media title from the successful download's actual filename.
+        if not extracted_title:
+            extracted_title = target_file.stem
+            # yt-dlp/ffmpeg may append a codec suffix to some names.
+            if extracted_title and not opts.get("title") and not opts.get("filename"):
+                opts["title"] = extracted_title
+                opts["filename"] = extracted_title
+                logger.info("Recovered title from downloaded filename: '%s'", extracted_title)
+
         if not is_audio and target_format.lower() in ("mp4", "mkv"):
             codec, pix_fmt = self._probe_video_codec(target_file)
             logger.info("Inspected downloaded video: codec=%s, pix_fmt=%s for %s", codec, pix_fmt, url)
@@ -247,43 +207,23 @@ class VideoAudioProcessor(BaseProcessor):
             if needs_transcode:
                 logger.info(
                     "Transcoding incompatible video codec '%s' to standard H.264 (yuv420p) for %s",
-                    codec,
-                    out_p,
+                    codec, out_p,
                 )
                 transcoded_path = work_dir / f"transcoded.{target_format}"
                 self._run_ffmpeg(
                     [
-                        "ffmpeg",
-                        "-y",
-                        "-i",
-                        str(target_file),
-                        "-c:v",
-                        "libx264",
-                        "-crf",
-                        "22",
-                        "-preset",
-                        "fast",
-                        "-pix_fmt",
-                        "yuv420p",
-                        "-c:a",
-                        "aac",
-                        "-b:a",
-                        "192k",
-                        "-movflags",
-                        "+faststart",
-                        str(transcoded_path),
+                        "ffmpeg", "-y", "-i", str(target_file),
+                        "-c:v", "libx264", "-crf", "22", "-preset", "fast",
+                        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+                        "-movflags", "+faststart", str(transcoded_path),
                     ]
                 )
                 target_file = transcoded_path
 
-        # Move target downloaded file to desired output_path
         if out_p.exists():
             out_p.unlink()
         shutil.move(str(target_file), str(out_p))
-
-        # Cleanup residual work files
         shutil.rmtree(work_dir, ignore_errors=True)
-
         return f"audio/{target_format}" if is_audio else f"video/{target_format}"
 
     def _process_bytes(self, input_data: bytes, options: dict[str, Any]) -> tuple[bytes, str]:
@@ -294,14 +234,11 @@ class VideoAudioProcessor(BaseProcessor):
             target_ext = str(sub_opts.get("format", "mp4")).lstrip(".")
             if str(options.get("operation")).lower() == "thumbnail":
                 target_ext = "jpg"
-
             inp = os.path.join(tmp_dir, f"input.{input_ext}")
             outp = os.path.join(tmp_dir, f"output.{target_ext}")
-
             if input_data:
                 with open(inp, "wb") as f:
                     f.write(input_data)
-
             content_type = self.process_file(
                 input_path=inp if input_data else None,
                 output_path=outp,
@@ -328,22 +265,15 @@ class VideoAudioProcessor(BaseProcessor):
         """Inspect video stream codec and pixel format using ffprobe."""
         ffprobe_bin = shutil.which("ffprobe") or "ffprobe"
         cmd = [
-            ffprobe_bin,
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=codec_name,pix_fmt",
-            "-of",
-            "csv=p=0",
+            ffprobe_bin, "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name,pix_fmt", "-of", "csv=p=0",
             str(file_path),
         ]
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
             if res.returncode == 0 and res.stdout.strip():
-                parts = [p.strip() for p in res.stdout.strip().split(",")]
-                codec = parts[0].lower() if len(parts) > 0 else "unknown"
+                parts = [part.strip() for part in res.stdout.strip().split(",")]
+                codec = parts[0].lower() if parts else "unknown"
                 pix = parts[1].lower() if len(parts) > 1 else "unknown"
                 return codec, pix
         except Exception as probe_err:  # noqa: BLE001
@@ -358,11 +288,7 @@ class VideoAudioProcessor(BaseProcessor):
     def _run_process(self, cmd: list[str]) -> None:
         try:
             res = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=300,
+                cmd, capture_output=True, text=True, check=True, timeout=300
             )
             logger.debug("Process stdout: %s", res.stdout)
         except subprocess.CalledProcessError as exc:
