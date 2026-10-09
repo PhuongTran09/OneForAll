@@ -1,9 +1,16 @@
 version: "3.9"
 
+# Windows: defaults keep OneForAll's temporary files and Redis data on drive D:.
+# Override ONEFORALL_TEMP_DIR / ONEFORALL_REDIS_DIR in .env if needed.
 x-worker-base: &worker-base
   build: .
   volumes:
     - .:/app
+    - type: bind
+      source: ${ONEFORALL_TEMP_DIR:-D:/OneForAll/temp}
+      target: /tmp/oneforall
+      bind:
+        create_host_path: true
   environment:
     - APP_NAME=OneForAll
     - APP_ENV=development
@@ -25,6 +32,11 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - .:/app
+      - type: bind
+        source: ${ONEFORALL_TEMP_DIR:-D:/OneForAll/temp}
+        target: /tmp/oneforall
+        bind:
+          create_host_path: true
     ports:
       - "8000:8000"
     environment:
@@ -41,25 +53,25 @@ services:
       redis:
         condition: service_started
 
-  # 1. Convert Worker: LibreOffice & VTracer (CPU/Memory bound)
+  # Convert Worker: LibreOffice & VTracer
   worker_convert:
     <<: *worker-base
     container_name: oneforall_worker_convert
     command: celery -A app.worker.celery_app worker -Q convert -n worker_convert@%h --loglevel=INFO --concurrency=2
 
-  # 2. Image Worker: Pillow operations (I/O & CPU light, high concurrency)
+  # Image Worker: Pillow operations
   worker_image:
     <<: *worker-base
     container_name: oneforall_worker_image
     command: celery -A app.worker.celery_app worker -Q image -n worker_image@%h --loglevel=INFO --concurrency=4
 
-  # 3. Video Worker: FFmpeg & yt-dlp (CPU & Disk I/O intensive)
+  # Video Worker: FFmpeg & yt-dlp
   worker_video:
     <<: *worker-base
     container_name: oneforall_worker_video
     command: celery -A app.worker.celery_app worker -Q video -n worker_video@%h --loglevel=INFO --concurrency=1
 
-  # 4. GPU Worker: BiRefNet background removal & AI models (VRAM intensive)
+  # GPU Worker: BiRefNet; enable GPU passthrough only after NVIDIA Container Toolkit is configured.
   worker_gpu:
     <<: *worker-base
     container_name: oneforall_worker_gpu
@@ -84,7 +96,7 @@ services:
     #           count: 1
     #           capabilities: [gpu]
 
-  # 5. Beat Worker: Scheduled tasks (e.g., cleanup expired files every 1 min)
+  # Scheduled cleanup tasks
   beat:
     <<: *worker-base
     container_name: oneforall_beat
@@ -94,5 +106,12 @@ services:
     image: redis:7-alpine
     container_name: oneforall_redis
     restart: always
+    command: redis-server --appendonly yes
+    volumes:
+      - type: bind
+        source: ${ONEFORALL_REDIS_DIR:-D:/OneForAll/data/redis}
+        target: /data
+        bind:
+          create_host_path: true
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
