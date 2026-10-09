@@ -18,6 +18,27 @@ class StorageService:
     def __init__(self) -> None:
         self._client: BaseClient | None = None
 
+    @staticmethod
+    def _validate_key(key: str) -> None:
+        if not key or not isinstance(key, str):
+            raise ValueError("Key must be a non-empty string")
+        clean = key.replace("\\", "/")
+        if ".." in clean or clean.startswith("/"):
+            raise ValueError(f"Path traversal detected for storage key: '{key}'")
+
+    @staticmethod
+    def _resolve_safe_local_path(key: str, base_dir: Path | str = "uploads") -> Path:
+        """Resolve storage key to safe local path, preventing directory traversal."""
+        StorageService._validate_key(key)
+        base = Path(base_dir).resolve()
+        clean_key = str(key).replace("\\", "/").lstrip("/")
+        target = (base / clean_key).resolve()
+        try:
+            target.relative_to(base)
+        except ValueError as err:
+            raise ValueError(f"Path traversal detected for storage key: '{key}'") from err
+        return target
+
     def get_client(self) -> BaseClient | None:
         """
         Lazily initialize and return the boto3 S3 client configured for Cloudflare R2.
@@ -54,6 +75,7 @@ class StorageService:
         """
         Generate a presigned PUT URL allowing clients to upload a file directly to Cloudflare R2.
         """
+        self._validate_key(key)
         client = self.get_client()
         if client:
             params: dict[str, Any] = {
@@ -98,6 +120,7 @@ class StorageService:
         Generate a presigned GET URL allowing clients to download a file from Cloudflare R2.
         Supports custom ResponseContentDisposition for proper download filenames.
         """
+        self._validate_key(key)
         client = self.get_client()
         if client:
             params: dict[str, Any] = {
@@ -141,6 +164,7 @@ class StorageService:
         Upload a file directly from SSD/local disk to Cloudflare R2 (or local fallback).
         Uses boto3 managed multipart upload without buffering the entire file into RAM.
         """
+        self._validate_key(key)
         src = Path(local_path)
         if not src.exists():
             raise FileNotFoundError(f"Local file '{src}' does not exist for upload to '{key}'.")
@@ -159,7 +183,7 @@ class StorageService:
             )
             return key
 
-        dest = Path("uploads") / key
+        dest = self._resolve_safe_local_path(key)
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dest)
         logger.warning("R2 is not configured; copied file locally from %s to %s", src, dest)
@@ -172,6 +196,7 @@ class StorageService:
         Stream an open file-like object directly to Cloudflare R2 (or local fallback).
         Streams in chunks without loading the entire payload into RAM.
         """
+        self._validate_key(key)
         client = self.get_client()
         if client:
             extra_args: dict[str, Any] = {}
@@ -186,7 +211,7 @@ class StorageService:
             )
             return key
 
-        dest = Path("uploads") / key
+        dest = self._resolve_safe_local_path(key)
         dest.parent.mkdir(parents=True, exist_ok=True)
         with open(dest, "wb") as f_out:
             shutil.copyfileobj(fileobj, f_out, length=1024 * 1024)
@@ -198,6 +223,7 @@ class StorageService:
         Download an object from Cloudflare R2 directly to a local SSD file (or local fallback).
         Streams chunks directly to disk without holding the file in RAM.
         """
+        self._validate_key(key)
         dest = Path(local_path)
         dest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -210,7 +236,7 @@ class StorageService:
             )
             return dest
 
-        src = Path("uploads") / key
+        src = self._resolve_safe_local_path(key)
         if src.exists():
             shutil.copyfile(src, dest)
             return dest
@@ -223,6 +249,7 @@ class StorageService:
         """
         Upload raw bytes directly from the server or worker to Cloudflare R2 (or local fallback).
         """
+        self._validate_key(key)
         client = self.get_client()
         if client:
             extra_args: dict[str, Any] = {}
@@ -238,7 +265,7 @@ class StorageService:
             return key
 
         # Fallback when R2 is not configured
-        local_path = Path("uploads") / key
+        local_path = self._resolve_safe_local_path(key)
         local_path.parent.mkdir(parents=True, exist_ok=True)
         local_path.write_bytes(data)
         logger.warning("R2 is not configured; saved file locally to %s", local_path)
@@ -248,6 +275,7 @@ class StorageService:
         """
         Download file content as raw bytes from Cloudflare R2 (or local fallback).
         """
+        self._validate_key(key)
         client = self.get_client()
         if client:
             response = client.get_object(
@@ -257,7 +285,7 @@ class StorageService:
             return response["Body"].read()
 
         # Local fallback
-        local_path = Path("uploads") / key
+        local_path = self._resolve_safe_local_path(key)
         if local_path.exists():
             return local_path.read_bytes()
         raise RuntimeError(f"File {key} not found and Cloudflare R2 is not configured.")
@@ -269,6 +297,7 @@ class StorageService:
         Stream file content in chunks from Cloudflare R2 (or local fallback).
         Prevents high memory usage (RAM) when serving large file downloads.
         """
+        self._validate_key(key)
         client = self.get_client()
         if client:
             response = client.get_object(
@@ -278,7 +307,7 @@ class StorageService:
             yield from response["Body"].iter_chunks(chunk_size=chunk_size)
             return
 
-        local_path = Path("uploads") / key
+        local_path = self._resolve_safe_local_path(key)
         if local_path.exists():
             with open(local_path, "rb") as f:
                 while chunk := f.read(chunk_size):
@@ -290,6 +319,7 @@ class StorageService:
         """
         Delete a file from Cloudflare R2 bucket.
         """
+        self._validate_key(key)
         client = self.get_client()
         if not client:
             return False

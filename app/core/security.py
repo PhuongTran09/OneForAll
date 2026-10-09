@@ -30,45 +30,44 @@ def verify_supabase_jwt(token: str) -> dict[str, Any]:
 
     # 1. Token sử dụng thuật toán đối xứng HMAC (HS256) - thường dùng trong test hoặc dự án cũ
     if alg == "HS256":
-        if settings.SUPABASE_JWT_SECRET:
-            try:
-                return jwt.decode(
-                    token,
-                    settings.SUPABASE_JWT_SECRET,
-                    algorithms=["HS256"],
-                    options={"verify_aud": False},
-                )
-            except jwt.ExpiredSignatureError as exc:
-                raise UnauthorizedException(detail="Supabase JWT has expired") from exc
-            except jwt.PyJWTError as exc:
-                raise UnauthorizedException(detail=f"Invalid or expired Supabase JWT: {exc!s}") from exc
-        else:
-            try:
-                return jwt.decode(
-                    token,
-                    options={"verify_signature": False, "verify_aud": False},
-                )
-            except Exception as exc:
-                raise UnauthorizedException(detail=f"Unable to parse token: {exc!s}") from exc
+        if not settings.SUPABASE_JWT_SECRET:
+            raise UnauthorizedException(
+                detail="HS256 token verification is not configured on server (missing SUPABASE_JWT_SECRET)"
+            )
+        try:
+            return jwt.decode(
+                token,
+                settings.SUPABASE_JWT_SECRET,
+                algorithms=["HS256"],
+                options={"verify_signature": True, "verify_exp": True, "verify_aud": False},
+            )
+        except jwt.ExpiredSignatureError as exc:
+            raise UnauthorizedException(detail="Supabase JWT has expired") from exc
+        except jwt.PyJWTError as exc:
+            raise UnauthorizedException(detail=f"Invalid or expired Supabase JWT: {exc!s}") from exc
 
     # 2. Token sử dụng thuật toán bất đối xứng (ES256/RS256) từ Supabase Auth qua JWKS
-    try:
-        signing_key = _jwk_client.get_signing_key_from_jwt(token)
-        return jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=[alg],
-            audience="authenticated",
-        )
-    except jwt.ExpiredSignatureError as exc:
-        raise UnauthorizedException(
-            detail="Supabase JWT has expired"
-        ) from exc
-    except jwt.InvalidTokenError as exc:
-        raise UnauthorizedException(
-            detail=f"Invalid or expired Supabase JWT: {exc!s}"
-        ) from exc
-    except Exception as exc:
-        raise UnauthorizedException(
-            detail=f"Unable to verify Supabase JWT: {exc!s}"
-        ) from exc
+    if alg in ("ES256", "RS256"):
+        try:
+            signing_key = _jwk_client.get_signing_key_from_jwt(token)
+            return jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=[alg],
+                audience="authenticated",
+                options={"verify_signature": True, "verify_exp": True},
+            )
+        except jwt.ExpiredSignatureError as exc:
+            raise UnauthorizedException(
+                detail="Supabase JWT has expired"
+            ) from exc
+        except jwt.InvalidTokenError as exc:
+            raise UnauthorizedException(
+                detail=f"Invalid or expired Supabase JWT: {exc!s}"
+            ) from exc
+        except Exception as exc:
+            raise UnauthorizedException(
+                detail=f"Unable to verify Supabase JWT: {exc!s}"
+            ) from exc
+
+    raise UnauthorizedException(detail=f"Unsupported token algorithm: '{alg}'")

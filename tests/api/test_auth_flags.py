@@ -274,7 +274,7 @@ async def test_download_public_job_requires_token(client: AsyncClient):
     # Force job to completed with output_key
     repo = JobRepository()
     job = await repo.get(job_id)
-    await repo.mark_completed(job_id, metadata={**job.job_metadata, "output_key": f"outputs/{job_id}/result.mp3"})
+    await repo.mark_completed(job, output_key=f"outputs/{job_id}/result.mp3", metadata={**job.job_metadata, "output_key": f"outputs/{job_id}/result.mp3"})
     # Manually set output_key via update
     from app.core.supabase import get_async_supabase_client
     client_sb = await get_async_supabase_client()

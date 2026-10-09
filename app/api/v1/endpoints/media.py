@@ -5,6 +5,7 @@ from uuid import uuid4
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 
 from app.api.deps import MediaAuthDep, SessionDep
+from app.core.url_validator import validate_safe_url
 from app.schemas.job import JobAccepted, JobCreate
 from app.services.format_detector import detect_format
 from app.services.job_service import job_service
@@ -122,6 +123,15 @@ async def create_video_job(
         resolved_key = None
     if resolved_url in ("", "string"):
         resolved_url = None
+
+    if resolved_url:
+        try:
+            resolved_url = validate_safe_url(resolved_url)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"URL không an toàn hoặc không hợp lệ: {exc!s}",
+            ) from exc
 
     # Nếu xử lý từ URL và không upload file trực tiếp thì không gán key từ storage
     if resolved_url and not file:

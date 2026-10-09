@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.exceptions import AppException
+from app.core.url_validator import validate_safe_url
 from app.utils.logger import logger
 from app.worker.processors.base import BaseProcessor
 
@@ -122,6 +123,9 @@ class VideoAudioProcessor(BaseProcessor):
         if not url:
             raise AppException(status_code=400, detail="URL must be provided for url_download")
 
+        # Validate URL to prevent SSRF and argument injection
+        url = validate_safe_url(url)
+
         opts = options or {}
         is_audio = target_format in ("mp3", "wav", "aac", "m4a")
         out_p = Path(output_path)
@@ -213,6 +217,8 @@ class VideoAudioProcessor(BaseProcessor):
             logger.warning("yt-dlp Python API error: %s, falling back to CLI", exc)
             cmd_str = shutil.which("yt-dlp") or "yt-dlp"
             cmd[0] = cmd_str
+            if "--" not in cmd:
+                cmd.append("--")
             if url not in cmd:
                 cmd.append(url)
             self._run_process(cmd)
