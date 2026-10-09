@@ -7,6 +7,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from app.api.v1.endpoints.health import router as health_router
 from app.api.v1.router import api_router
 from app.core.config import settings
+from app.middleware.upload_size_limit import UploadSizeLimitMiddleware
 from app.utils.logger import logger
 
 
@@ -26,6 +27,9 @@ def create_application() -> FastAPI:
         redoc_url=f"{settings.API_V1_PREFIX}/redoc",
         lifespan=lifespan,
     )
+
+    # Bound incoming upload bodies before Starlette parses multipart/form-data.
+    app.add_middleware(UploadSizeLimitMiddleware)
 
     # GZip compression for responses > 1KB (JSON, SVG, text)
     app.add_middleware(GZipMiddleware, minimum_size=1000)
