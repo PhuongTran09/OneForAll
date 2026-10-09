@@ -66,7 +66,16 @@ async def _async_process_video_job(job_id: str) -> dict[str, Any]:
             options=metadata,
         )
 
-        # Output extension based on content_type / output_path
+        # The processor receives the nested options/params dict. Promote any
+        # extracted title to the metadata root because the download endpoint
+        # resolves Content-Disposition from metadata.title first.
+        resolved_opts = metadata.get("options") or metadata.get("params") or {}
+        if isinstance(resolved_opts, dict):
+            title = resolved_opts.get("title") or resolved_opts.get("filename")
+            if title:
+                metadata.setdefault("title", title)
+                metadata.setdefault("filename", title)
+
         ext = target_ext
         if ext == "jpeg":
             ext = "jpg"
@@ -90,7 +99,6 @@ async def _async_process_video_job(job_id: str) -> dict[str, Any]:
                     del_err,
                 )
 
-        # Final output có thời hạn tối đa 3 phút
         expires_at = datetime.now(UTC) + timedelta(minutes=3)
         await repo.mark_completed(
             job,
@@ -124,7 +132,7 @@ async def _async_process_video_job(job_id: str) -> dict[str, Any]:
 def process_video_job(job_id: str, **kwargs: Any) -> dict[str, Any]:
     """
     Main job processor for video processing on the 'video' queue.
-    Workloads: FFmpeg (transcoding, audio extraction, thumbnailing) & yt-dlp.
+    Workloads: FFmpeg (transcoding, audio extraction, thumbnail generation) & yt-dlp.
     """
     logger.info("[video-worker] Processing video job: %s", job_id)
     return run_in_worker_loop(_async_process_video_job(job_id))
