@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = "redis://redis:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://redis:6379/1"
     CELERY_PROCESS_JOB_TASK: str = "app.worker.tasks.process_job"
+    CELERY_DEFAULT_QUEUE: str = "convert"
 
     # Cloudflare R2 Storage
     R2_ACCOUNT_ID: str = ""
@@ -48,13 +49,13 @@ class Settings(BaseSettings):
     MODEL_DEVICE: str = "cuda"  # 'cuda', 'auto', or 'cpu'
     PRELOAD_MODEL: bool = False  # Heavy model loading belongs to Celery workers.
 
-    # Upload limits (bytes). Limits are enforced while streaming UploadFile.
+    # Upload limits (bytes). Upload middleware caps the whole multipart body;
+    # endpoint validation applies stricter limits to the actual file by category.
     MAX_AUDIO_UPLOAD_BYTES: int = 200 * 1024 * 1024
     MAX_IMAGE_UPLOAD_BYTES: int = 50 * 1024 * 1024
     MAX_BACKGROUND_REMOVAL_UPLOAD_BYTES: int = 25 * 1024 * 1024
     MAX_DOCUMENT_UPLOAD_BYTES: int = 100 * 1024 * 1024
     MAX_VIDEO_UPLOAD_BYTES: int = 1024 * 1024 * 1024
-    # Fallback maximum for formats not mapped to a dedicated category.
     MAX_OTHER_UPLOAD_BYTES: int = 100 * 1024 * 1024
 
     # Auth Flags (True = Bắt buộc đăng nhập Bearer token, False = Tắt auth / cho phép gọi ẩn danh)
