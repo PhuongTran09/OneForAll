@@ -10,6 +10,7 @@ from app.services.format_detector import detect_format
 from app.services.job_service import job_service
 from app.services.storage_service import storage_service
 from app.utils.download_token import generate_download_token
+from app.utils.upload_limits import max_upload_bytes, validate_upload_size
 
 router = APIRouter(prefix="/image", tags=["Image"])
 
@@ -49,7 +50,6 @@ async def create_image_process_job(
     resolved_input_key = input_key
     raw_options: Any = options
 
-    # Hỗ trợ backward-compatibility nếu client gửi application/json
     if request.headers.get("content-type", "").startswith("application/json"):
         try:
             body = await request.json()
@@ -79,6 +79,13 @@ async def create_image_process_job(
             )
             or "png"
         )
+        category = (
+            "background_removal"
+            if resolved_op.lower() in {"remove_background", "birefnet"}
+            else "image"
+        )
+        await validate_upload_size(file, max_upload_bytes(category), category)
+
         target_key = f"uploads/{job_id}/original.{detected_ext}"
         storage_service.upload_fileobj(
             fileobj=file.file,
@@ -107,7 +114,6 @@ async def create_image_process_job(
         or parsed_options.get("title")
         or (file.filename.rsplit(".", 1)[0] if file and file.filename else None)
     )
-
     job_metadata: dict[str, Any] = {
         "operation": resolved_op,
         "options": parsed_options,
@@ -118,8 +124,6 @@ async def create_image_process_job(
         job_metadata["original_filename"] = file.filename
 
     user_id = str(current_user.id) if current_user else "anonymous"
-
-    # Generate download token for public/anonymous jobs
     download_token: str | None = None
     if not current_user:
         download_token, token_hash = generate_download_token()
