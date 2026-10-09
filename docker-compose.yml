@@ -1,0 +1,175 @@
+
+name: oneforall
+
+# Windows: lưu file tạm và dữ liệu Redis trên ổ D:
+# Có thể thay đổi bằng ONEFORALL_TEMP_DIR và ONEFORALL_REDIS_DIR trong .env.
+
+x-worker-base: &worker-base
+  build:
+    context: .
+  restart: unless-stopped
+  env_file:
+    - .env
+  environment: &common-env
+    APP_NAME: OneForAll
+    APP_ENV: development
+    DEBUG: "false"
+    CELERY_BROKER_URL: redis://redis:6379/0
+    CELERY_RESULT_BACKEND: redis://redis:6379/1
+  volumes:
+    - .:/app
+    - type: bind
+      source: ${ONEFORALL_TEMP_DIR:-D:/OneForAll/temp}
+      target: /tmp/oneforall
+      bind:
+        create_host_path: true
+  depends_on:
+    redis:
+      condition: service_healthy
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: oneforall_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - type: bind
+        source: ${ONEFORALL_REDIS_DIR:-D:/OneForAll/data/redis}
+        target: /data
+        bind:
+          create_host_path: true
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  web:
+    build:
+      context: .
+    container_name: oneforall_api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_NAME: OneForAll
+      APP_ENV: development
+      DEBUG: "false"
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    volumes:
+      - .:/app
+      - type: bind
+        source: ${ONEFORALL_TEMP_DIR:-D:/OneForAll/temp}
+        target: /tmp/oneforall
+        bind:
+          create_host_path: true
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker_convert:
+    <<: *worker-base
+    container_name: oneforall_worker_convert
+    command:
+      - celery
+      - -A
+      - app.worker.celery_app
+      - worker
+      - -Q
+      - convert
+      - -n
+      - worker_convert@%h
+      - --loglevel=INFO
+      - --concurrency=2
+
+  worker_image:
+    <<: *worker-base
+    container_name: oneforall_worker_image
+    command:
+      - celery
+      - -A
+      - app.worker.celery_app
+      - worker
+      - -Q
+      - image
+      - -n
+      - worker_image@%h
+      - --loglevel=INFO
+      - --concurrency=2
+
+  worker_video:
+    <<: *worker-base
+    container_name: oneforall_worker_video
+    command:
+      - celery
+      - -A
+      - app.worker.celery_app
+      - worker
+      - -Q
+      - video
+      - -n
+      - worker_video@%h
+      - --loglevel=INFO
+      - --concurrency=1
+
+  worker_gpu:
+    <<: *worker-base
+    container_name: oneforall_worker_gpu
+    profiles:
+      - gpu
+    environment:
+      <<: *common-env
+      MODEL_DEVICE: cuda
+    command:
+      - celery
+      - -A
+      - app.worker.celery_app
+      - worker
+      - -Q
+      - gpu
+      - -n
+      - worker_gpu@%h
+      - --loglevel=INFO
+      - --concurrency=1
+      - -P
+      - solo
+    # Chỉ bật GPU sau khi Docker đã hỗ trợ NVIDIA GPU passthrough.
+
+  beat:
+    <<: *worker-base
+    container_name: oneforall_beat
+    command:
+      - celery
+      - -A
+      - app.worker.celery_app
+      - beat
+      - --loglevel=INFO
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: oneforall_tunnel
+    restart: unless-stopped
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+      - --token
+      - ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - web
+
+volumes: {}
+
