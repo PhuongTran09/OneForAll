@@ -4,11 +4,12 @@ from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 
-from app.api.deps import CurrentUserDep, SessionDep
+from app.api.deps import MediaAuthDep, SessionDep
 from app.schemas.job import JobAccepted, JobCreate
 from app.services.format_detector import detect_format
 from app.services.job_service import job_service
 from app.services.storage_service import storage_service
+from app.utils.download_token import generate_download_token
 
 router = APIRouter(tags=["Media"])
 
@@ -39,7 +40,7 @@ router = APIRouter(tags=["Media"])
 async def create_video_job(
     request: Request,
     session: SessionDep,
-    current_user: CurrentUserDep,
+    current_user: MediaAuthDep = None,
     file: Annotated[
         UploadFile | None,
         File(description="File video hoặc audio cần xử lý"),
@@ -147,22 +148,43 @@ async def create_video_job(
         except json.JSONDecodeError:
             parsed_params = {}
 
+    title_candidate = (
+        parsed_params.get("filename")
+        or parsed_params.get("title")
+        or (file.filename.rsplit(".", 1)[0] if file and file.filename else None)
+    )
+
+    job_metadata: dict[str, Any] = {
+        "operation": resolved_op,
+        "url": resolved_url,
+        "options": parsed_params,
+    }
+    if title_candidate:
+        job_metadata["title"] = title_candidate
+    if file and file.filename:
+        job_metadata["original_filename"] = file.filename
+
+    user_id = str(current_user.id) if current_user else "anonymous"
+
+    # Generate download token for public/anonymous jobs
+    download_token: str | None = None
+    if not current_user:
+        download_token, token_hash = generate_download_token()
+        job_metadata["download_token_hash"] = token_hash
+
     job = await job_service.create_and_enqueue(
         session=session,
         user=current_user,
         payload=JobCreate(
             id=job_id,
-            user_id=str(current_user.id),
+            user_id=user_id,
             type="video",
             input_key=resolved_key,
-            metadata={
-                "operation": resolved_op,
-                "url": resolved_url,
-                "options": parsed_params,
-            },
+            metadata=job_metadata,
         ),
     )
     return JobAccepted(
         job_id=job.id,
         status=job.status,
+        download_token=download_token,
     )

@@ -88,19 +88,28 @@ class StorageService:
         )
 
     def create_presigned_download_url(
-        self, *, key: str, expires_in: int = 900
+        self,
+        *,
+        key: str,
+        expires_in: int = 900,
+        response_content_disposition: str | None = None,
     ) -> PresignedUrlResponse:
         """
         Generate a presigned GET URL allowing clients to download a file from Cloudflare R2.
+        Supports custom ResponseContentDisposition for proper download filenames.
         """
         client = self.get_client()
         if client:
+            params: dict[str, Any] = {
+                "Bucket": settings.R2_BUCKET_NAME,
+                "Key": key,
+            }
+            if response_content_disposition:
+                params["ResponseContentDisposition"] = response_content_disposition
+
             url = client.generate_presigned_url(
                 ClientMethod="get_object",
-                Params={
-                    "Bucket": settings.R2_BUCKET_NAME,
-                    "Key": key,
-                },
+                Params=params,
                 ExpiresIn=expires_in,
             )
             return PresignedUrlResponse(
@@ -115,9 +124,12 @@ class StorageService:
             "R2 is not configured; generating mock download URL for key: %s", key
         )
         public_base = settings.R2_PUBLIC_BASE_URL or "https://r2.example.local"
+        query_suffix = f"?expires_in={expires_in}"
+        if response_content_disposition:
+            query_suffix += f"&response_content_disposition={quote(response_content_disposition)}"
         return PresignedUrlResponse(
             key=key,
-            url=f"{public_base.rstrip('/')}/download/{quote(key)}?expires_in={expires_in}",
+            url=f"{public_base.rstrip('/')}/download/{quote(key)}{query_suffix}",
             method="GET",
             expires_in=expires_in,
         )

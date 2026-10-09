@@ -81,11 +81,15 @@ class JobRepository:
         return Job.model_validate(data)
 
     async def mark_completed(
-        self, job: Job, output_key: str | None, expires_at: datetime | None = None
+        self,
+        job: Job,
+        output_key: str | None,
+        expires_at: datetime | None = None,
+        metadata: dict | None = None,
     ) -> Job:
         client = await self._get_client()
         completed_at = datetime.now(UTC).isoformat()
-        updates = {
+        updates: dict[str, Any] = {
             "status": JobStatus.COMPLETED.value,
             "progress": 100,
             "output_key": output_key,
@@ -97,6 +101,8 @@ class JobRepository:
                 if isinstance(expires_at, datetime)
                 else str(expires_at)
             )
+        if metadata is not None:
+            updates["metadata"] = metadata
         res = await client.table("jobs").update(updates).eq("id", job.id).execute()
         data = res.data[0] if res.data else {**job.model_dump(), **updates}
         return Job.model_validate(data)

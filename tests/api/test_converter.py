@@ -201,7 +201,7 @@ async def test_anonymous_convert_file_lifecycle(client: AsyncClient):
     # 4.1 Direct binary download without redirect (?direct=true)
     direct_res = await client.get(f"/api/v1/files/{job_id}/download?direct=true")
     assert direct_res.status_code == 200
-    assert 'attachment; filename="result.svg"' in direct_res.headers.get("content-disposition", "")
+    assert 'attachment; filename="test.svg"' in direct_res.headers.get("content-disposition", "")
     assert direct_res.content == b"fake-file-content" or len(direct_res.content) > 0
 
     # 4.2 Khi download thành công, file và job được xóa ngay lập tức

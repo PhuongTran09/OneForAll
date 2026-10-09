@@ -251,3 +251,53 @@ async def test_video_process_alias_route(client: AsyncClient):
     assert data["status"] == "queued"
 
 
+@pytest.mark.asyncio
+async def test_media_process_anonymous_without_auth(client: AsyncClient):
+    """Verify /api/v1/media/process can be called without Authorization header."""
+    response = await client.post(
+        "/api/v1/media/process",
+        data={
+            "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "operation": "url_download",
+            "params": '{"format": "mp3"}',
+        },
+    )
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+    repo = JobRepository()
+    job = await repo.get(job_id)
+    assert job is not None
+    assert job.user_id == "anonymous"
+
+    # Also verify GET /api/v1/jobs/{job_id} works without auth
+    status_res = await client.get(f"/api/v1/jobs/{job_id}")
+    assert status_res.status_code == 200
+    assert status_res.json()["id"] == job_id
+
+
+@pytest.mark.asyncio
+async def test_image_process_anonymous_without_auth(client: AsyncClient):
+    """Verify /api/v1/image/process can be called without Authorization header."""
+    png_bytes = _create_sample_png()
+    response = await client.post(
+        "/api/v1/image/process",
+        data={
+            "operation": "compress",
+            "options": '{"quality": 80}',
+        },
+        files={"file": ("photo.png", png_bytes, "image/png")},
+    )
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+    repo = JobRepository()
+    job = await repo.get(job_id)
+    assert job is not None
+    assert job.user_id == "anonymous"
+
+    # Also verify GET /api/v1/jobs/{job_id} works without auth
+    status_res = await client.get(f"/api/v1/jobs/{job_id}")
+    assert status_res.status_code == 200
+    assert status_res.json()["id"] == job_id
+
+
+

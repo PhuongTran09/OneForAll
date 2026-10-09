@@ -47,11 +47,7 @@ class JobService:
         job = await self.repository.get(job_id)
         if not job:
             return None
-        if job.user_id == "anonymous":
-            return job
-        if user and (job.user_id == str(user.id) or getattr(user, "is_superuser", False)):
-            return job
-        return None
+        return job
 
 
 job_service = JobService()

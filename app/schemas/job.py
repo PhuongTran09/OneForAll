@@ -35,3 +35,20 @@ class JobResponse(BaseModel):
 class JobAccepted(BaseModel):
     job_id: str
     status: JobStatus
+    download_token: str | None = None
+
+
+class JobPublicResponse(BaseModel):
+    """Filtered job response for guest/public access — omits sensitive fields."""
+
+    id: str
+    type: str
+    status: JobStatus
+    progress: int
+    error: str | None
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+    expires_at: datetime | None = None
+
+    model_config = {"from_attributes": True}

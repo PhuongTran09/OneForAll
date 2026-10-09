@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     MODEL_DEVICE: str = "cuda"  # 'cuda', 'auto', or 'cpu'
     PRELOAD_MODEL: bool = False  # Heavy model loading belongs to Celery workers.
 
+    # Auth Flags (True = Bắt buộc đăng nhập Bearer token, False = Tắt auth / cho phép gọi ẩn danh)
+    AUTH_REQUIRED_MEDIA: bool = False
+    AUTH_REQUIRED_IMAGE: bool = False
+    AUTH_REQUIRED_CONVERT: bool = False
+    AUTH_REQUIRED_JOBS: bool = False
+    AUTH_REQUIRED_DOWNLOAD: bool = False
+
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", case_sensitive=True, extra="ignore"
     )

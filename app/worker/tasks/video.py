@@ -92,7 +92,12 @@ async def _async_process_video_job(job_id: str) -> dict[str, Any]:
 
         # Final output có thời hạn tối đa 3 phút
         expires_at = datetime.now(UTC) + timedelta(minutes=3)
-        await repo.mark_completed(job, output_key=output_key, expires_at=expires_at)
+        await repo.mark_completed(
+            job,
+            output_key=output_key,
+            expires_at=expires_at,
+            metadata=metadata,
+        )
         logger.info("[video-worker] Job %s completed! Expires at: %s", job_id, expires_at)
         return {
             "job_id": job_id,

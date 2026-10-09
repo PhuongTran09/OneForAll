@@ -117,3 +117,55 @@ async def test_expired_download_cleans_up_and_returns_410(client: AsyncClient):
     # R2 output và Job DB phải bị xóa
     assert output_key not in _fake_storage
     assert await repo.get(job.id) is None
+
+
+@pytest.mark.asyncio
+async def test_download_uses_custom_title_in_content_disposition(client: AsyncClient):
+    """File download phải lấy đúng tiêu đề (title hoặc original_filename) thay vì result.mp4."""
+    repo = JobRepository()
+    job = await repo.create(
+        user_id="anonymous",
+        type="video",
+        input_key=None,
+        metadata={"title": "Rick Astley - Never Gonna Give You Up"},
+    )
+    output_key = f"outputs/{job.id}/result.mp4"
+    storage_service.upload_bytes(data=b"fake-video-content", key=output_key, content_type="video/mp4")
+    await repo.mark_completed(
+        job,
+        output_key=output_key,
+        expires_at=datetime.now(UTC) + timedelta(minutes=3),
+        metadata=job.job_metadata,
+    )
+
+    resp = await client.get(f"/api/v1/files/{job.id}/download?direct=true")
+    assert resp.status_code == 200
+    disposition = resp.headers.get("content-disposition", "")
+    assert 'filename="Rick Astley - Never Gonna Give You Up.mp4"' in disposition
+    assert "filename*=UTF-8''Rick%20Astley%20-%20Never%20Gonna%20Give%20You%20Up.mp4" in disposition
+
+
+@pytest.mark.asyncio
+async def test_download_uses_original_filename_fallback(client: AsyncClient):
+    """File download fallback về original_filename nếu không có title từ URL."""
+    repo = JobRepository()
+    job = await repo.create(
+        user_id="anonymous",
+        type="convert",
+        input_key=None,
+        metadata={"original_filename": "BaoCaoTaiChinh2024.docx"},
+    )
+    output_key = f"outputs/{job.id}/result.pdf"
+    storage_service.upload_bytes(data=b"%PDF-1.4 Fake", key=output_key, content_type="application/pdf")
+    await repo.mark_completed(
+        job,
+        output_key=output_key,
+        expires_at=datetime.now(UTC) + timedelta(minutes=3),
+        metadata=job.job_metadata,
+    )
+
+    resp = await client.get(f"/api/v1/files/{job.id}/download?direct=true")
+    assert resp.status_code == 200
+    disposition = resp.headers.get("content-disposition", "")
+    assert 'filename="BaoCaoTaiChinh2024.pdf"' in disposition
+

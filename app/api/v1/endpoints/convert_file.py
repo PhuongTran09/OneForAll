@@ -1,10 +1,10 @@
 import json
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
-from app.api.deps import OptionalUserDep, SessionDep
+from app.api.deps import ConvertAuthDep, SessionDep
 from app.schemas.job import JobAccepted, JobCreate
 from app.services.format_detector import (
     detect_format,
@@ -13,6 +13,7 @@ from app.services.format_detector import (
 )
 from app.services.job_service import job_service
 from app.services.storage_service import storage_service
+from app.utils.download_token import generate_download_token
 
 router = APIRouter(tags=["Convert File"])
 
@@ -32,12 +33,7 @@ router = APIRouter(tags=["Convert File"])
     "/convert",
     response_model=JobAccepted,
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Tạo Job chuyển đổi file (multipart/form-data)",
-    description=(
-        "Tải lên file trực tiếp hoặc cung cấp input_key để tạo background job chuyển đổi. "
-        "Hệ thống tự động nhận diện định dạng nguồn (MIME type, extension, file signature) "
-        "mà không yêu cầu gửi tham số 'from'."
-    ),
+    include_in_schema=False,
 )
 async def create_convert_file_job(
     session: SessionDep,
@@ -70,7 +66,7 @@ async def create_convert_file_job(
             description='JSON chuỗi các tùy chọn nâng cao (ví dụ: {"title": "Báo cáo"})'
         ),
     ] = None,
-    current_user: OptionalUserDep = None,
+    current_user: ConvertAuthDep = None,
 ):
     if not file and not input_key:
         raise HTTPException(
@@ -156,6 +152,29 @@ async def create_convert_file_job(
 
     user_id = str(current_user.id) if current_user else "anonymous"
 
+    title_candidate = (
+        parsed_options.get("filename")
+        or parsed_options.get("title")
+        or (file.filename.rsplit(".", 1)[0] if file and file.filename else None)
+    )
+
+    job_metadata: dict[str, Any] = {
+        "from": resolved_from,
+        "to": target_to,
+        "operation": operation,
+        "options": parsed_options,
+    }
+    if title_candidate:
+        job_metadata["title"] = title_candidate
+    if file and file.filename:
+        job_metadata["original_filename"] = file.filename
+
+    # Generate download token for public/anonymous jobs
+    download_token: str | None = None
+    if not current_user:
+        download_token, token_hash = generate_download_token()
+        job_metadata["download_token_hash"] = token_hash
+
     job = await job_service.create_and_enqueue(
         session=session,
         user=current_user,
@@ -164,16 +183,12 @@ async def create_convert_file_job(
             user_id=user_id,
             type="convert_file",
             input_key=input_key,
-            metadata={
-                "from": resolved_from,
-                "to": target_to,
-                "operation": operation,
-                "options": parsed_options,
-            },
+            metadata=job_metadata,
         ),
     )
 
     return JobAccepted(
         job_id=job.id,
         status=job.status,
+        download_token=download_token,
     )

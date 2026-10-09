@@ -1,0 +1,453 @@
+================================================================================
+           ONEFORALL - BẢNG TRA CỨU PARAMS HỢP LỆ VÀ DANH SÁCH TEST CASE
+================================================================================
+
+MỤC LỤC:
+PHẦN A: BẢNG TỔNG HỢP TẤT CẢ CÁC PARAMS HỢP LỆ THEO TỪNG ENDPOINT
+  1. POST /api/v1/media/process (Aliases: /video/process, /video/jobs)
+  2. POST /api/v1/image/process
+  3. POST /api/v1/convert-file (Alias: /api/v1/convert)
+  4. GET  /api/v1/jobs/{job_id}
+  5. GET  /api/v1/files/{job_id}/download
+  6. POST /api/v1/files/{job_id}/consumed
+  7. POST /api/v1/files/presigned-upload-url
+  8. POST /api/v1/files/presigned-download-url
+  9. POST /api/v1/payments/payos
+  10. PATCH /api/v1/users/me
+
+PHẦN B: TOÀN BỘ CÁC LỆNH TEST cURL MẪU
+
+================================================================================
+PHẦN A: BẢNG TỔNG HỢP TẤT CẢ CÁC PARAMS HỢP LỆ THEO TỪNG ENDPOINT
+================================================================================
+
+--------------------------------------------------------------------------------
+1. POST /api/v1/media/process (Aliases: /video/process, /video/jobs)
+--------------------------------------------------------------------------------
+Dùng để: Tải video/audio từ URL (YouTube, TikTok, Facebook,...), nén/transcode video,
+         bóc tách âm thanh sang MP3/WAV/AAC, hoặc chụp thumbnail từ video.
+Content-Type: multipart/form-data (hoặc application/json nếu không upload file)
+
+CÁC PARAMS CẤP ĐẦU (Form fields):
+* file: [File nhị phân] (Tùy chọn nếu có url hoặc input_key). Hỗ trợ: mp4, mkv, webm, avi, mov, flv, wmv, mp3, wav, flac, aac, m4a, ogg.
+* input_file_key (hoặc input_key): [string] (Tùy chọn) Key file đã có sẵn trên R2, ví dụ: "uploads/{job_id}/original.mp4".
+* url: [string] (Tùy chọn) URL video từ YouTube, TikTok, Facebook, Instagram,...
+* operation: [string] (Mặc định: "transcode"). Các giá trị hợp lệ:
+    - "url_download" (hoặc "download", "ytdlp"): Tải media từ URL.
+    - "transcode": Nén / đổi định dạng / đổi codec video.
+    - "extract-audio" (hoặc "audio"): Bóc tách âm thanh từ video sang audio file.
+    - "thumbnail": Chụp 1 ảnh khung hình tại thời điểm bất kỳ trong video.
+* params (hoặc options): [JSON string hoặc object] Các tùy chọn chi tiết:
+    + Khi operation = "url_download":
+        - "format": "mp4" (video), "mp3" (audio), "wav", "aac", "m4a" (Mặc định: "mp4")
+    + Khi operation = "transcode":
+        - "format": "mp4", "mkv", "webm", "avi" (Mặc định: "mp4")
+        - "vcodec": "libx264" (H.264), "libx265" (HEVC/H.265), "libvpx-vp9", "copy" (Mặc định: "libx264")
+        - "acodec": "aac", "libmp3lame", "opus", "copy" (Mặc định: "aac")
+        - "crf": "18" (chất lượng rất nét), "23" (chuẩn mặc định), "28" (nén giảm dung lượng cao)
+    + Khi operation = "extract-audio":
+        - "format": "mp3", "wav", "aac", "ogg", "flac", "m4a" (Mặc định: "mp3")
+    + Khi operation = "thumbnail":
+        - "time": Thời điểm lấy ảnh, định dạng "HH:MM:SS" hoặc số giây, ví dụ: "00:00:05", "00:01:30", "5" (Mặc định: "00:00:01")
+
+
+--------------------------------------------------------------------------------
+2. POST /api/v1/image/process
+--------------------------------------------------------------------------------
+Dùng để: Nén ảnh, thay đổi kích thước, cắt cúp (crop), hoặc xóa phông nền bằng AI.
+Content-Type: multipart/form-data (hoặc application/json nếu đã có input_key)
+
+CÁC PARAMS CẤP ĐẦU (Form fields):
+* file: [File nhị phân] (Tùy chọn nếu có input_key). Hỗ trợ: png, jpg, jpeg, webp, bmp, tiff, gif.
+* input_key: [string] (Tùy chọn) Key file ảnh có sẵn trên R2.
+* operation: [string] (Mặc định: "compress"). Các giá trị hợp lệ:
+    - "compress": Nén dung lượng ảnh.
+    - "resize": Đổi kích thước ảnh (width / height).
+    - "crop": Cắt cúp ảnh theo tọa độ box.
+    - "remove_background": Tách phông nền bằng AI BiRefNet (tự động chạy qua GPU worker).
+* options: [JSON string hoặc object] Các tùy chọn chi tiết:
+    + Khi operation = "compress":
+        - "quality": [int, 1-100] Mức chất lượng nén (Mặc định: 85).
+        - "format": "JPEG", "PNG", "WEBP" (Chuyển sang định dạng đích nếu muốn).
+        - "lossless": [bool, true/false] (Chỉ áp dụng với WEBP, mặc định: false).
+    + Khi operation = "resize":
+        - "width": [int] Chiều rộng mới theo px (ví dụ: 800).
+        - "height": [int] Chiều cao mới theo px (ví dụ: 600).
+          (Lưu ý: Nếu chỉ truyền width hoặc height, hệ thống tự động giữ nguyên tỉ lệ aspect-ratio).
+        - "quality": [int, 1-100] (Tùy chọn, mặc định: 85).
+    + Khi operation = "crop":
+        - "box": [array gồm 4 số int: [left, upper, right, lower]], ví dụ: [100, 100, 500, 500].
+        - "quality": [int, 1-100] (Tùy chọn, mặc định: 85).
+    + Khi operation = "remove_background":
+        - Không cần options (output luôn là file PNG trong suốt).
+
+
+--------------------------------------------------------------------------------
+3. POST /api/v1/convert-file (Alias: /api/v1/convert)
+--------------------------------------------------------------------------------
+Dùng để: Chuyển đổi định dạng file văn bản, bảng tính, vector hóa và ảnh.
+Content-Type: multipart/form-data
+
+CÁC PARAMS CẤP ĐẦU (Form fields):
+* file: [File nhị phân] File tài liệu hoặc hình ảnh nguồn.
+* input_key: [string] (Tùy chọn nếu không upload trực tiếp). Key trên R2.
+* to: [string] (BẮT BUỘC) Định dạng đích mong muốn.
+    - Chuyển tài liệu: "pdf", "docx", "doc", "csv", "json".
+    - Chuyển vector/ảnh: "svg", "png", "jpg", "jpeg", "webp".
+* from (alias: from_format): [string] (TÙY CHỌN, server tự động nhận diện từ MIME/signature):
+    CÁC CẶP CHUYỂN ĐỔI HỢP LỆ ĐƯỢC HỖ TRỢ:
+    - docx  ->  pdf
+    - doc   ->  pdf
+    - txt   ->  pdf
+    - txt   ->  docx (hoặc doc)
+    - xlsx  ->  csv
+    - xlsx  ->  json
+    - xlsx  ->  pdf
+    - png   ->  svg (Vector tracing via VTracer)
+    - png   ->  jpg (hoặc jpeg)
+    - png   ->  webp
+    - jpg   ->  png
+    - jpg   ->  webp
+* options: [JSON string] Tùy chọn nâng cao theo từng loại:
+    + Cho txt -> pdf:
+        - "title": [string] Tiêu đề tài liệu PDF (mặc định: "Tài liệu").
+    + Cho txt -> docx:
+        - "title": [string] Tiêu đề tài liệu Word.
+    + Cho xlsx -> csv:
+        - "sheet_name": [string] Tên sheet cần xuất (mặc định: sheet đầu tiên).
+    + Cho xlsx -> json:
+        - "sheet_name": [string] Tên sheet cần xuất.
+        - "all_sheets": [bool, true/false] Xuất tất cả các sheet thành multi-dict (mặc định: false).
+    + Cho xlsx -> pdf:
+        - "sheet_name": [string] Tên sheet.
+        - "title": [string] Tiêu đề bảng tính (mặc định: "Bảng tính Excel").
+    + Cho png -> svg (VTracer):
+        - "colormode": "color" (giữ màu) hoặc "binary" (đen trắng) (mặc định: "color").
+        - "mode": "spline" (mượt), "polygon" (đa giác), "pixel" (mặc định: "spline").
+    + Cho png -> jpg, jpg -> webp:
+        - "quality": [int, 1-100] (mặc định: 90-95).
+        - "lossless": [bool, true/false] (chỉ cho webp).
+
+
+--------------------------------------------------------------------------------
+4. GET /api/v1/jobs/{job_id}
+--------------------------------------------------------------------------------
+Dùng để: Theo dõi trạng thái tiến độ job và nhận link/key kết quả.
+Params:
+* Path param:
+    - job_id: [string, UUID] ID của Job.
+* Header:
+    - Authorization: Tùy chọn (KHÔNG BẮT BUỘC - Bất kỳ client nào có job_id đều xem được tiến độ).
+Output fields chính:
+    - status: "queued" | "processing" | "completed" | "failed"
+    - progress: 0 -> 100
+    - output_key: "outputs/{job_id}/result.{ext}"
+    - expires_at: Thời điểm hết hạn (TTL 3 phút đối với file kết quả, 5 phút đối với job failed).
+
+
+--------------------------------------------------------------------------------
+5. GET /api/v1/files/{job_id}/download
+--------------------------------------------------------------------------------
+Dùng để: Tải file kết quả.
+Params:
+* Path param:
+    - job_id: [string, UUID] ID của Job.
+* Header:
+    - Authorization: Tùy chọn (KHÔNG BẮT BUỘC - Bất kỳ ai có job_id đều có thể tải file kết quả).
+* Query params:
+    - direct: [bool, true/false] (Mặc định: false)
+        + direct=true: Tải trực tiếp stream binary file về máy client. Sau khi stream 100% thành công,
+          server tự động xóa file trên R2 và xóa Job khỏi DB ngay lập tức (không cần chờ hết 3 phút).
+          Nếu mạng đứt giữa chừng, file được giữ nguyên cho phép retry.
+        + direct=false: Trả về JSON chứa presigned URL tải từ Cloudflare R2.
+    - redirect: [bool, true/false] (Mặc định: false)
+        + redirect=true: HTTP 307 Redirect trình duyệt trực tiếp sang R2 download link.
+
+
+--------------------------------------------------------------------------------
+6. POST /api/v1/files/{job_id}/consumed
+--------------------------------------------------------------------------------
+Dùng để: Báo cho server biết client đã download xong qua presigned link để dọn dẹp R2 và DB ngay.
+Params:
+* Path param:
+    - job_id: [string, UUID] ID của Job.
+
+
+--------------------------------------------------------------------------------
+7. POST /api/v1/files/presigned-upload-url
+--------------------------------------------------------------------------------
+Dùng để: Tạo presigned PUT URL để client upload trực tiếp file lớn lên R2 (tránh qua FastAPI).
+Body (JSON):
+* key: [string, bắt buộc] Đường dẫn lưu trữ, ví dụ: "uploads/{job_id}/original.mp4".
+* content_type: [string, tùy chọn] MIME type, ví dụ: "video/mp4", "image/png".
+* expires_in: [int, 60 đến 86400, mặc định: 900] Thời hạn URL tính theo giây.
+
+
+--------------------------------------------------------------------------------
+8. POST /api/v1/files/presigned-download-url
+--------------------------------------------------------------------------------
+Dùng để: Tạo presigned GET URL để tải một key bất kỳ từ R2.
+Body (JSON):
+* key: [string, bắt buộc] Key file trên R2.
+* expires_in: [int, 60 đến 86400, mặc định: 900].
+
+
+--------------------------------------------------------------------------------
+9. POST /api/v1/payments/payos
+--------------------------------------------------------------------------------
+Dùng để: Tạo link thanh toán nâng cấp tài khoản qua PayOS.
+Body (JSON):
+* plan_id: [string, bắt buộc] Mã gói, ví dụ: "pro_monthly", "pro_yearly".
+* return_url: [string, bắt buộc] URL chuyển hướng khi thanh toán thành công.
+* cancel_url: [string, bắt buộc] URL chuyển hướng khi người dùng hủy.
+
+
+--------------------------------------------------------------------------------
+10. PATCH /api/v1/users/me
+--------------------------------------------------------------------------------
+Dùng để: Cập nhật thông tin tài khoản người dùng hiện tại.
+Body (JSON):
+* full_name: [string, tùy chọn] Họ và tên.
+* username: [string, độ dài 3-50, tùy chọn] Tên đăng nhập.
+* email: [string, định dạng email hợp lệ, tùy chọn].
+
+
+================================================================================
+PHẦN B: TOÀN BỘ CÁC LỆNH TEST cURL MẪU
+================================================================================
+
+--------------------------------------------------------------------------------
+MỤC 1: HỆ THỐNG & USER PROFILE
+--------------------------------------------------------------------------------
+
+[TEST 1.1] Kiểm tra trạng thái hệ thống (Health Check)
+curl -X GET "http://localhost:8000/api/v1/health"
+
+[TEST 1.2] Lấy thông tin cá nhân (Me Profile)
+curl -X GET "http://localhost:8000/api/v1/users/me" \
+  -H "Authorization: Bearer <TOKEN>"
+
+[TEST 1.3] Cập nhật thông tin cá nhân (Update Profile)
+curl -X PATCH "http://localhost:8000/api/v1/users/me" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d "{\"full_name\": \"Nguyen Van A\", \"username\": \"nguyenvana\"}"
+
+
+--------------------------------------------------------------------------------
+MỤC 2: MEDIA PROCESSING (VIDEO & AUDIO: FFMPEG & YT-DLP)
+--------------------------------------------------------------------------------
+
+[TEST 2.1] Convert YouTube URL sang MP3
+curl -X POST "http://localhost:8000/api/v1/media/process" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "url=https://www.youtube.com/watch?v=dQw4w9WgXcQ" \
+  -F "operation=url_download" \
+  -F "params={\"format\": \"mp3\"}"
+
+[TEST 2.2] Tải Video từ YouTube URL sang MP4
+curl -X POST "http://localhost:8000/api/v1/media/process" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "url=https://www.youtube.com/watch?v=dQw4w9WgXcQ" \
+  -F "operation=url_download" \
+  -F "params={\"format\": \"mp4\"}"
+
+[TEST 2.3] Convert TikTok URL sang MP3
+curl -X POST "http://localhost:8000/api/v1/media/process" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "url=https://www.tiktok.com/@scout2015/video/6718335390845095173" \
+  -F "operation=url_download" \
+  -F "params={\"format\": \"mp3\"}"
+
+[TEST 2.4] Tải Video TikTok sang MP4 (Tự động transcode fix lỗi màn hình đen)
+curl -X POST "http://localhost:8000/api/v1/media/process" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "url=https://www.tiktok.com/@scout2015/video/6718335390845095173" \
+  -F "operation=url_download" \
+  -F "params={\"format\": \"mp4\"}"
+
+[TEST 2.5] Upload file video và bóc tách Audio sang MP3
+curl -X POST "http://localhost:8000/api/v1/media/process" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "file=@clip.mp4" \
+  -F "operation=extract-audio" \
+  -F "params={\"format\": \"mp3\"}"
+
+[TEST 2.6] Upload file video và Transcode (Nén video, H.264, crf 28)
+curl -X POST "http://localhost:8000/api/v1/media/process" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "file=@clip.mp4" \
+  -F "operation=transcode" \
+  -F "params={\"format\": \"mp4\", \"vcodec\": \"libx264\", \"acodec\": \"aac\", \"crf\": \"28\"}"
+
+[TEST 2.7] Upload file video và chụp ảnh Thumbnail ở giây thứ 5
+curl -X POST "http://localhost:8000/api/v1/media/process" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "file=@clip.mp4" \
+  -F "operation=thumbnail" \
+  -F "params={\"time\": \"00:00:05\"}"
+
+
+--------------------------------------------------------------------------------
+MỤC 3: CHUYỂN ĐỔI FILE & TÀI LIỆU (CONVERT FILE)
+--------------------------------------------------------------------------------
+
+[TEST 3.1] Chuyển đổi PNG sang SVG (Vector Tracing via VTracer)
+curl -X POST "http://localhost:8000/api/v1/convert-file" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "file=@sample.png" \
+  -F "to=svg" \
+  -F "options={\"colormode\": \"color\", \"mode\": \"spline\"}"
+
+[TEST 3.2] Chuyển đổi DOCX sang PDF
+curl -X POST "http://localhost:8000/api/v1/convert-file" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "file=@sample.docx" \
+  -F "to=pdf"
+
+[TEST 3.3] Chuyển đổi TXT sang PDF (kèm tiêu đề tài liệu)
+curl -X POST "http://localhost:8000/api/v1/convert-file" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "file=@sample.txt" \
+  -F "to=pdf" \
+  -F "options={\"title\": \"Bao Cao Tong Hop\"}"
+
+[TEST 3.4] Chuyển đổi TXT sang DOCX (Word)
+curl -X POST "http://localhost:8000/api/v1/convert-file" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "file=@sample.txt" \
+  -F "to=docx"
+
+[TEST 3.5] Chuyển đổi Excel (XLSX) sang CSV
+curl -X POST "http://localhost:8000/api/v1/convert-file" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "file=@sample.xlsx" \
+  -F "to=csv"
+
+[TEST 3.6] Chuyển đổi Excel (XLSX) sang JSON
+curl -X POST "http://localhost:8000/api/v1/convert-file" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "file=@sample.xlsx" \
+  -F "to=json" \
+  -F "options={\"all_sheets\": true}"
+
+[TEST 3.7] Chuyển đổi PNG sang JPG (chất lượng 90)
+curl -X POST "http://localhost:8000/api/v1/convert-file" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "file=@sample.png" \
+  -F "to=jpg" \
+  -F "options={\"quality\": 90}"
+
+[TEST 3.8] Chuyển đổi JPG sang WEBP
+curl -X POST "http://localhost:8000/api/v1/convert-file" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "file=@sample.jpg" \
+  -F "to=webp" \
+  -F "options={\"quality\": 85, \"lossless\": false}"
+
+[TEST 3.9] Chuyển đổi file Ẩn danh (Anonymous Job, không cần header Authorization)
+curl -X POST "http://localhost:8000/api/v1/convert-file" \
+  -F "file=@sample.png" \
+  -F "to=svg"
+
+
+--------------------------------------------------------------------------------
+MỤC 4: XỬ LÝ HÌNH ẢNH & AI (IMAGE & GPU BACKGROUND REMOVAL)
+--------------------------------------------------------------------------------
+
+[TEST 4.1] Nén ảnh (Compress Quality 80)
+curl -X POST "http://localhost:8000/api/v1/image/process" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "file=@sample.png" \
+  -F "operation=compress" \
+  -F "options={\"quality\": 80}"
+
+[TEST 4.2] Resize kích thước ảnh (Chiều rộng 800px, tự động scale chiều cao)
+curl -X POST "http://localhost:8000/api/v1/image/process" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "file=@sample.png" \
+  -F "operation=resize" \
+  -F "options={\"width\": 800}"
+
+[TEST 4.3] Resize cố định cả rộng và cao (300x300)
+curl -X POST "http://localhost:8000/api/v1/image/process" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "file=@sample.png" \
+  -F "operation=resize" \
+  -F "options={\"width\": 300, \"height\": 300}"
+
+[TEST 4.4] Cắt ảnh (Crop theo bounding box [left, upper, right, lower])
+curl -X POST "http://localhost:8000/api/v1/image/process" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "file=@sample.png" \
+  -F "operation=crop" \
+  -F "options={\"box\": [50, 50, 400, 400]}"
+
+[TEST 4.5] Tách nền ảnh bằng AI (Remove Background via BiRefNet / GPU)
+curl -X POST "http://localhost:8000/api/v1/image/process" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "file=@sample.png" \
+  -F "operation=remove_background"
+
+
+--------------------------------------------------------------------------------
+MỤC 5: THEO DÕI TRẠNG THÁI JOB (JOB POLLING)
+--------------------------------------------------------------------------------
+
+[TEST 5.1] Kiểm tra tiến độ và kết quả Job
+curl -X GET "http://localhost:8000/api/v1/jobs/<JOB_ID>" \
+  -H "Authorization: Bearer <TOKEN>"
+
+* Nếu là Anonymous Job:
+curl -X GET "http://localhost:8000/api/v1/jobs/<JOB_ID>"
+
+
+--------------------------------------------------------------------------------
+MỤC 6: TẢI FILE KẾT QUẢ & QUẢN LÝ STORAGE
+--------------------------------------------------------------------------------
+
+[TEST 6.1] Tải file nhị phân trực tiếp (Binary Stream, tự động xóa R2 và DB khi xong)
+curl -X GET "http://localhost:8000/api/v1/files/<JOB_ID>/download?direct=true" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -o "ket_qua_tai_ve.dat"
+
+[TEST 6.2] Lấy Presigned Download URL để tải trực tiếp từ Cloudflare R2
+curl -X GET "http://localhost:8000/api/v1/files/<JOB_ID>/download" \
+  -H "Authorization: Bearer <TOKEN>"
+
+[TEST 6.3] Tải qua Redirect trực tiếp sang R2 (HTTP 307)
+curl -L -X GET "http://localhost:8000/api/v1/files/<JOB_ID>/download?redirect=true" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -o "ket_qua_r2.dat"
+
+[TEST 6.4] Xác nhận tải xong khi dùng Presigned URL (để xóa ngay file R2 và DB Job)
+curl -X POST "http://localhost:8000/api/v1/files/<JOB_ID>/consumed" \
+  -H "Authorization: Bearer <TOKEN>"
+
+[TEST 6.5] Kiểm tra kết nối Cloudflare R2
+curl -X GET "http://localhost:8000/api/v1/files/r2/status" \
+  -H "Authorization: Bearer <TOKEN>"
+
+[TEST 6.6] Sinh Presigned URL để upload trước file lên R2
+curl -X POST "http://localhost:8000/api/v1/files/presigned-upload-url" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d "{\"key\": \"uploads/test_upload.png\", \"content_type\": \"image/png\", \"expires_in\": 900}"
+
+
+--------------------------------------------------------------------------------
+MỤC 7: THANH TOÁN (PAYMENTS)
+--------------------------------------------------------------------------------
+
+[TEST 7.1] Tạo liên kết thanh toán PayOS
+curl -X POST "http://localhost:8000/api/v1/payments/payos" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d "{\"plan_id\": \"pro_monthly\", \"return_url\": \"https://myapp.com/payment/success\", \"cancel_url\": \"https://myapp.com/payment/cancel\"}"
+
+[TEST 7.2] Webhook nhận kết quả thanh toán từ PayOS
+curl -X POST "http://localhost:8000/api/v1/payments/payos/webhook" \
+  -H "Content-Type: application/json" \
+  -d "{\"code\": \"00\", \"desc\": \"success\", \"data\": {\"orderCode\": 123456, \"amount\": 50000, \"description\": \"Goi Pro OneForAll\"}}"
+
+================================================================================

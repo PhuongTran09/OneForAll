@@ -1,15 +1,18 @@
 import asyncio
 import mimetypes
 from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import RedirectResponse, StreamingResponse
 
-from app.api.deps import CurrentUserDep, OptionalUserDep, SessionDep
+from app.api.deps import CurrentUserDep, DownloadAuthDep, SessionDep
 from app.models.job import JobStatus
 from app.repositories.job_repository import JobRepository
 from app.schemas.file import PresignedUrlRequest, PresignedUrlResponse
 from app.services.storage_service import storage_service
+from app.utils.download_token import verify_download_token
+from app.utils.filename import build_content_disposition
 from app.utils.logger import logger
 
 router = APIRouter(prefix="/files", tags=["Files"])
@@ -47,7 +50,11 @@ async def create_presigned_download_url(
 async def download_job_result_file(
     job_id: str,
     session: SessionDep,
-    current_user: OptionalUserDep = None,
+    current_user: DownloadAuthDep = None,
+    token: str | None = Query(
+        default=None,
+        description="Download token cho job public/anonymous (bắt buộc nếu job không cần đăng nhập)",
+    ),
     redirect: bool = Query(
         default=False,
         description="Nếu True sẽ tự động chuyển hướng (HTTP 307) tới link download trực tiếp trên R2",
@@ -62,14 +69,41 @@ async def download_job_result_file(
     if not job:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Không tìm thấy Job hoặc bạn không có quyền truy cập.",
+            detail="Không tìm thấy Job.",
         )
 
-    if job.user_id != "anonymous" and (not current_user or job.user_id != str(current_user.id)):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Bạn không có quyền truy cập file này.",
-        )
+    # --- Access Control ---
+    is_public_job = job.user_id == "anonymous"
+    metadata = job.job_metadata or {}
+
+    if is_public_job:
+        # Public job: require valid download token
+        stored_hash = metadata.get("download_token_hash")
+        if not stored_hash:
+            # Old public job without token — allow access (backwards compat)
+            pass
+        elif not token:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Job public yêu cầu download token. Vui lòng cung cấp ?token=<download_token>.",
+            )
+        elif not verify_download_token(token, stored_hash):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Download token không hợp lệ hoặc đã hết hạn.",
+            )
+    else:
+        # Private job: require authenticated user who owns the job
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Cần đăng nhập để tải file của job này.",
+            )
+        if str(current_user.id) != job.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Bạn không có quyền tải file của Job này.",
+            )
 
     # 1. Kiểm tra đã hết hạn chưa (TTL 3 phút)
     now = datetime.now(UTC)
@@ -108,12 +142,30 @@ async def download_job_result_file(
             detail="Không tìm thấy file kết quả của Job.",
         )
 
+    # Xác định tiêu đề / tên file tải về mong muốn
+    raw_ext = job.output_key.split(".")[-1] if "." in job.output_key else ""
+    sub_opts = metadata.get("options") or {} if isinstance(metadata.get("options"), dict) else {}
+
+    title_candidate = (
+        metadata.get("title")
+        or sub_opts.get("title")
+        or metadata.get("filename")
+        or sub_opts.get("filename")
+        or (Path(metadata["original_filename"]).stem if metadata.get("original_filename") else None)
+        or "result"
+    )
+
+    final_filename, content_disposition = build_content_disposition(
+        title=str(title_candidate),
+        ext=raw_ext,
+        fallback="result",
+    )
+
     # Tùy chọn 1: Tải trực tiếp file nhị phân qua stream
     # Khi stream thành công toàn bộ: xóa R2 output ngay và DELETE job khỏi database.
     # Nếu client disconnect / abort giữa chừng: giữ nguyên R2 output và DB job để user retry.
     if direct:
-        filename = job.output_key.split("/")[-1]
-        media_type, _ = mimetypes.guess_type(filename)
+        media_type, _ = mimetypes.guess_type(final_filename)
         media_type = media_type or "application/octet-stream"
 
         output_key = job.output_key
@@ -163,14 +215,15 @@ async def download_job_result_file(
             stream_and_cleanup(),
             media_type=media_type,
             headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Disposition": content_disposition,
             },
         )
 
-    # 3. Sinh presigned download URL (hết hạn sau 3 phút)
+    # 3. Sinh presigned download URL (hết hạn sau 3 phút) kèm ResponseContentDisposition
     presigned = storage_service.create_presigned_download_url(
         key=job.output_key,
         expires_in=180,
+        response_content_disposition=content_disposition,
     )
 
     # Tùy chọn 2: Chuyển hướng (HTTP 307)
@@ -191,7 +244,7 @@ async def download_job_result_file(
 async def mark_job_result_consumed(
     job_id: str,
     session: SessionDep,
-    current_user: OptionalUserDep = None,
+    current_user: DownloadAuthDep = None,
 ):
     repo = JobRepository(session)
     job = await repo.get(job_id)

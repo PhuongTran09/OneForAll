@@ -3,6 +3,7 @@ from typing import Annotated, Any
 from fastapi import Depends, Header
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from app.core.config import settings
 from app.core.exceptions import ForbiddenException, UnauthorizedException
 from app.core.security import verify_supabase_jwt
 from app.models.user import User
@@ -93,6 +94,30 @@ CurrentUserDep = CurrentUser
 OptionalUser = Annotated[User | None, Depends(get_current_user_optional)]
 OptionalUserDep = OptionalUser
 
+
+def require_auth_if_enabled(flag_attr: str):
+    """Dependency that enforces auth only when settings.<flag_attr> is True.
+
+    If flag is True: requires Bearer token, raises 401 if missing/invalid.
+    If flag is False: allows anonymous requests, returns User if valid token or None.
+    """
+    async def _dependency(
+        token: str | None = Depends(get_token_from_header),
+    ) -> User | None:
+        if getattr(settings, flag_attr, False):
+            return await get_current_user(token)
+        return await get_current_user_optional(token)
+
+    return _dependency
+
+
+MediaAuthDep = Annotated[User | None, Depends(require_auth_if_enabled("AUTH_REQUIRED_MEDIA"))]
+ImageAuthDep = Annotated[User | None, Depends(require_auth_if_enabled("AUTH_REQUIRED_IMAGE"))]
+ConvertAuthDep = Annotated[User | None, Depends(require_auth_if_enabled("AUTH_REQUIRED_CONVERT"))]
+JobAuthDep = Annotated[User | None, Depends(require_auth_if_enabled("AUTH_REQUIRED_JOBS"))]
+DownloadAuthDep = Annotated[User | None, Depends(require_auth_if_enabled("AUTH_REQUIRED_DOWNLOAD"))]
+
+# Superuser alias
 SuperuserDep = Annotated[User, Depends(require_superuser)]
 
 # Backwards compatibility dummy dependency

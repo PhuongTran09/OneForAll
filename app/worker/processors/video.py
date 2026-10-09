@@ -136,23 +136,35 @@ class VideoAudioProcessor(BaseProcessor):
         # Working temporary folder in the same directory as output_path
         work_dir = out_p.parent / "work"
         work_dir.mkdir(parents=True, exist_ok=True)
-        out_template = str(work_dir / "media.%(ext)s")
+        # Use the video title as the downloaded filename 
+        out_template = str(work_dir / "%(title).180B.%(ext)s")
 
         cmd = ["yt-dlp", "--no-playlist", "-o", out_template]
         if is_audio:
             format_selector = "bestaudio/best"
             cmd.extend(["-x", "--audio-format", target_format])
         else:
-            # Prioritize standard H.264 (avc1/h264) over ByteDance proprietary ByteVC1/HEVC
+            # Prefer 1080p60, then lower quality while prioritizing H.264/MP4.
             format_selector = (
-                f"bestvideo[vcodec^=avc][ext={target_format}]+bestaudio[ext=m4a]/"
-                f"bestvideo[vcodec^=h264][ext={target_format}]+bestaudio/"
-                f"best[vcodec^=avc][ext={target_format}]/"
-                f"best[vcodec^=h264][ext={target_format}]/"
-                f"bestvideo[ext={target_format}]+bestaudio[ext=m4a]/"
-                f"bestvideo[ext={target_format}]+bestaudio/"
-                f"best[ext={target_format}]/"
-                f"bestvideo+bestaudio/best"
+                # 1080p60 H.264 MP4
+                f"bestvideo[height=1080][fps>=60][vcodec^=avc][ext={target_format}]+bestaudio[ext=m4a]/"
+
+                # 1080p60 H.264 with other audio formats
+                f"bestvideo[height=1080][fps>=60][vcodec^=avc][ext={target_format}]+bestaudio/"
+
+                # 1080p60 with other codecs
+                f"bestvideo[height=1080][fps>=60][ext={target_format}]+bestaudio/"
+
+                # Best available H.264/MP4 at 1080p or lower
+                f"bestvideo[height<=1080][vcodec^=avc][ext={target_format}]+bestaudio[ext=m4a]/"
+                f"bestvideo[height<=1080][vcodec^=avc][ext={target_format}]+bestaudio/"
+
+                # Best available MP4 at 1080p or lower
+                f"bestvideo[height<=1080][ext={target_format}]+bestaudio[ext=m4a]/"
+                f"bestvideo[height<=1080][ext={target_format}]+bestaudio/"
+
+                # Fallback
+                "bestvideo+bestaudio/best"
             )
             cmd.extend(["-f", format_selector])
 
@@ -186,7 +198,16 @@ class VideoAudioProcessor(BaseProcessor):
                 ydl_opts["format"] = format_selector
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+                info = ydl.extract_info(url, download=True)
+                if isinstance(info, dict):
+                    extracted_title = info.get("title")
+                    if not extracted_title and "entries" in info and info["entries"]:
+                        first_entry = info["entries"][0]
+                        if isinstance(first_entry, dict):
+                            extracted_title = first_entry.get("title")
+                    if extracted_title and not opts.get("title") and not opts.get("filename"):
+                        opts["title"] = extracted_title
+                        logger.info("Extracted title for %s: '%s'", url, extracted_title)
 
         except Exception as exc:  # noqa: BLE001
             logger.warning("yt-dlp Python API error: %s, falling back to CLI", exc)
