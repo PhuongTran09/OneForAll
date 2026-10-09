@@ -44,6 +44,8 @@ class Settings(BaseSettings):
 
     # AI Model Settings
     BIREFNET_MODEL_NAME: str = "ZhengPeng7/BiRefNet"
+    # Must be an immutable 40-character Hugging Face commit SHA in production.
+    BIREFNET_MODEL_REVISION: str = ""
     MODEL_DEVICE: str = "cuda"  # 'cuda', 'auto', or 'cpu'
     PRELOAD_MODEL: bool = False  # Heavy model loading belongs to Celery workers.
 

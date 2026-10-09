@@ -1,4 +1,5 @@
 import io
+import re
 from pathlib import Path
 import threading
 from typing import Any
@@ -16,8 +17,7 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 
 # Giới hạn số pixel đầu vào để tránh decompression bomb / hết RAM
 MAX_INPUT_PIXELS: int = getattr(settings, "MAX_IMAGE_PIXELS", 50_000_000)
-# Có thể pin revision của model để tránh chạy code remote thay đổi ngoài ý muốn
-MODEL_REVISION: str | None = getattr(settings, "BIREFNET_MODEL_REVISION", None)
+MODEL_REVISION_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
 class BackgroundRemovalService:
@@ -65,7 +65,7 @@ class BackgroundRemovalService:
 
     # ------------------------------------------------------------------ model
     def load_model(self):
-        """Tải mô hình vào bộ nhớ (VRAM/RAM)"""
+        """Tải mô hình từ một revision bất biến đã được cấu hình vào bộ nhớ."""
         if self._model is not None:
             return
 
@@ -82,6 +82,16 @@ class BackgroundRemovalService:
                     detail="Thiếu thư viện AI (torch/transformers). Vui lòng cài đặt requirements.txt",
                 ) from e
 
+            revision = (settings.BIREFNET_MODEL_REVISION or "").strip()
+            if not MODEL_REVISION_PATTERN.fullmatch(revision):
+                raise AppException(
+                    status_code=500,
+                    detail=(
+                        "BIREFNET_MODEL_REVISION phải được cấu hình bằng commit SHA "
+                        "Hugging Face gồm đúng 40 ký tự hex đã được kiểm tra."
+                    ),
+                )
+
             dev = self.device
             logger.info(f"[*] Khởi động hệ thống trên thiết bị: {dev.upper()}")
             if dev == "cuda":
@@ -90,12 +100,14 @@ class BackgroundRemovalService:
                 torch.set_float32_matmul_precision("high")
                 torch.backends.cudnn.benchmark = True
 
-            logger.info(f"[*] Đang tải mô hình ({settings.BIREFNET_MODEL_NAME})...")
-            kwargs: dict[str, Any] = {"trust_remote_code": True}
-            if MODEL_REVISION:
-                kwargs["revision"] = MODEL_REVISION
+            logger.info(
+                f"[*] Đang tải mô hình ({settings.BIREFNET_MODEL_NAME}) "
+                f"tại revision {revision}..."
+            )
             model = AutoModelForImageSegmentation.from_pretrained(
-                settings.BIREFNET_MODEL_NAME, **kwargs
+                settings.BIREFNET_MODEL_NAME,
+                revision=revision,
+                trust_remote_code=True,
             )
             model.to(dev).float().eval()  # float32 để đảm bảo ổn định số học
             model.requires_grad_(False)
