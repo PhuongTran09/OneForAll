@@ -14,6 +14,7 @@ from app.services.format_detector import (
 from app.services.job_service import job_service
 from app.services.storage_service import storage_service
 from app.utils.download_token import generate_download_token
+from app.utils.upload_limits import max_upload_bytes, validate_upload_size
 
 router = APIRouter(tags=["Convert File"])
 
@@ -78,6 +79,8 @@ async def create_convert_file_job(
     resolved_from: str | None = None
 
     if file:
+        # Identify the likely category before reading/uploading the file.
+        image_formats = {"png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "svg", "avif"}
         header = await file.read(4096)
         if not header:
             raise HTTPException(
@@ -86,7 +89,6 @@ async def create_convert_file_job(
             )
         await file.seek(0)
 
-        # Tự động detect format dựa trên file upload (ưu tiên MIME type + extension + magic bytes)
         detected = detect_format(
             content=header,
             filename=file.filename,
@@ -97,9 +99,10 @@ async def create_convert_file_job(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Không thể xác định định dạng của file tải lên. Vui lòng kiểm tra lại file.",
             )
-        resolved_from = detected
+        category = "image" if detected.lower() in image_formats else "document"
+        await validate_upload_size(file, max_upload_bytes(category), category)
 
-        # Định dạng key chuẩn theo thiết kế: uploads/{job_id}/original.ext
+        resolved_from = detected
         safe_ext = resolved_from
         target_key = f"uploads/{job_id}/original.{safe_ext}"
         storage_service.upload_fileobj(
@@ -110,7 +113,6 @@ async def create_convert_file_job(
         input_key = target_key
 
     elif input_key:
-        # Trường hợp sử dụng input_key đã upload sẵn
         detected = detect_format(filename=input_key) or (
             normalize_format(from_format) if from_format else None
         )
@@ -134,7 +136,6 @@ async def create_convert_file_job(
             detail="Vui lòng chỉ định định dạng đích 'to'.",
         )
 
-    # Validate định dạng trước khi enqueue Celery job
     if not is_conversion_supported(resolved_from, target_to):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -142,7 +143,6 @@ async def create_convert_file_job(
         )
 
     operation = f"{resolved_from}-to-{target_to}"
-
     parsed_options: dict = {}
     if options:
         try:
@@ -151,7 +151,6 @@ async def create_convert_file_job(
             parsed_options = {}
 
     user_id = str(current_user.id) if current_user else "anonymous"
-
     title_candidate = (
         parsed_options.get("filename")
         or parsed_options.get("title")
@@ -169,7 +168,6 @@ async def create_convert_file_job(
     if file and file.filename:
         job_metadata["original_filename"] = file.filename
 
-    # Generate download token for public/anonymous jobs
     download_token: str | None = None
     if not current_user:
         download_token, token_hash = generate_download_token()

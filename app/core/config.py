@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     MODEL_DEVICE: str = "cuda"  # 'cuda', 'auto', or 'cpu'
     PRELOAD_MODEL: bool = False  # Heavy model loading belongs to Celery workers. 
 
+    # Upload limits (bytes). Upload middleware caps the whole multipart body;
+    # endpoint validation applies stricter limits to the actual file by category.
+    MAX_AUDIO_UPLOAD_BYTES: int = 200 * 1024 * 1024
+    MAX_IMAGE_UPLOAD_BYTES: int = 50 * 1024 * 1024
+    MAX_BACKGROUND_REMOVAL_UPLOAD_BYTES: int = 25 * 1024 * 1024
+    MAX_DOCUMENT_UPLOAD_BYTES: int = 100 * 1024 * 1024
+    MAX_VIDEO_UPLOAD_BYTES: int = 1024 * 1024 * 1024
+    MAX_OTHER_UPLOAD_BYTES: int = 100 * 1024 * 1024
+
     # Auth Flags (True = Bắt buộc đăng nhập Bearer token, False = Tắt auth / cho phép gọi ẩn danh)
     AUTH_REQUIRED_MEDIA: bool = False
     AUTH_REQUIRED_IMAGE: bool = False
