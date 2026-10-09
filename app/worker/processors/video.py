@@ -126,7 +126,8 @@ class VideoAudioProcessor(BaseProcessor):
         # Validate URL to prevent SSRF and argument injection
         url = validate_safe_url(url)
 
-        opts = options or {}
+        # Preserve the caller's nested metadata dict so the extracted title can be persisted.
+        opts = options if options is not None else {}
         is_audio = target_format in ("mp3", "wav", "aac", "m4a")
         out_p = Path(output_path)
         out_p.parent.mkdir(parents=True, exist_ok=True)
@@ -209,8 +210,9 @@ class VideoAudioProcessor(BaseProcessor):
                         first_entry = info["entries"][0]
                         if isinstance(first_entry, dict):
                             extracted_title = first_entry.get("title")
-                    if extracted_title and not opts.get("title") and not opts.get("filename"):
-                        opts["title"] = extracted_title
+                    if extracted_title:
+                        opts.setdefault("title", extracted_title)
+                        opts.setdefault("filename", extracted_title)
                         logger.info("Extracted title for %s: '%s'", url, extracted_title)
 
         except Exception as exc:  # noqa: BLE001
@@ -234,6 +236,15 @@ class VideoAudioProcessor(BaseProcessor):
 
         matching = [f for f in files if f.name.lower().endswith(f".{target_format}")]
         target_file = matching[0] if matching else files[0]
+
+        # If the Python API failed and the CLI fallback succeeded, recover the
+        # title from yt-dlp's title-based output filename.
+        if not opts.get("title") and not opts.get("filename"):
+            recovered_title = target_file.stem
+            if recovered_title:
+                opts["title"] = recovered_title
+                opts["filename"] = recovered_title
+                logger.info("Recovered title from downloaded filename: '%s'", recovered_title)
 
         # Ensure video is standard H.264 (yuv420p) to prevent black screen in browsers / players
         if not is_audio and target_format.lower() in ("mp4", "mkv"):
