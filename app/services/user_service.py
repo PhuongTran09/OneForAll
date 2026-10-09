@@ -4,7 +4,7 @@ from uuid import uuid4
 from app.core.exceptions import BadRequestException, NotFoundException
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
-from app.schemas.user import UserCreate, UserUpdate
+from app.schemas.user import UserAdminUpdate, UserCreate, UserProfileUpdate, UserUpdate
 
 
 class UserService:
@@ -45,7 +45,21 @@ class UserService:
         )
         return await self.repository.create(user)
 
-    async def update_user(self, user_id: str, user_in: UserUpdate) -> User:
+    async def update_profile(self, user_id: str, profile_in: UserProfileUpdate) -> User:
+        user = await self.get_user_by_id(user_id)
+
+        if profile_in.username and profile_in.username != user.username:
+            existing = await self.repository.get_by_username(profile_in.username)
+            if existing:
+                raise BadRequestException(detail="Username already taken")
+            user.username = profile_in.username
+
+        if profile_in.full_name is not None:
+            user.full_name = profile_in.full_name
+
+        return await self.repository.update_user(user)
+
+    async def update_user(self, user_id: str, user_in: UserAdminUpdate | UserUpdate) -> User:
         user = await self.get_user_by_id(user_id)
 
         if user_in.email and user_in.email != user.email:

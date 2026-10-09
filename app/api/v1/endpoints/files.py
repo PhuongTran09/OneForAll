@@ -18,11 +18,38 @@ from app.utils.logger import logger
 router = APIRouter(prefix="/files", tags=["Files"])
 
 
+def _validate_safe_storage_key(key: str) -> None:
+    if not key or not isinstance(key, str):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Object key cannot be empty.")
+    normalized = key.replace("\\", "/")
+    if ".." in normalized or normalized.startswith("/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid object key path (path traversal detected).",
+        )
+
+
 @router.post("/presigned-upload-url", response_model=PresignedUrlResponse)
 async def create_presigned_upload_url(
     request: PresignedUrlRequest,
     current_user: CurrentUserDep,
 ):
+    _validate_safe_storage_key(request.key)
+    # Users can only upload to uploads/ namespace, not overwrite outputs/
+    if not current_user.is_superuser:
+        if request.key.startswith("outputs/"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Direct uploads to 'outputs/' namespace are not permitted.",
+            )
+        # Prevent uploading into other users' private namespace: uploads/<other_user_id>/...
+        parts = request.key.split("/")
+        if len(parts) >= 3 and parts[0] == "uploads" and parts[1] != str(current_user.id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot upload into another user's namespace.",
+            )
+
     return storage_service.create_presigned_upload_url(
         key=request.key,
         content_type=request.content_type,
@@ -129,17 +156,14 @@ async def download_job_result_file(
     metadata = job.job_metadata or {}
 
     if is_public_job:
-        # Public job: require valid download token
+        # Public job: strictly require valid download token
         stored_hash = metadata.get("download_token_hash")
-        if not stored_hash:
-            # Old public job without token — allow access (backwards compat)
-            pass
-        elif not token:
+        if not token:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Job public yêu cầu download token. Vui lòng cung cấp ?token=<download_token>.",
             )
-        elif not verify_download_token(token, stored_hash):
+        if not stored_hash or not verify_download_token(token, stored_hash):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Download token không hợp lệ hoặc đã hết hạn.",
@@ -297,17 +321,37 @@ async def mark_job_result_consumed(
     job_id: str,
     session: SessionDep,
     current_user: DownloadAuthDep = None,
+    token: str | None = Query(
+        default=None,
+        description="Download token cho job public/anonymous (bắt buộc nếu job là public)",
+    ),
 ):
     repo = JobRepository(session)
     job = await repo.get(job_id)
     if not job:
         return {"status": "ok", "message": "Job đã được dọn dẹp hoặc không tồn tại."}
 
-    if job.user_id != "anonymous" and (not current_user or job.user_id != str(current_user.id)):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Bạn không có quyền thao tác trên Job này.",
-        )
+    is_public_job = job.user_id == "anonymous"
+    metadata = job.job_metadata or {}
+
+    if is_public_job:
+        stored_hash = metadata.get("download_token_hash")
+        if not stored_hash or not token or not verify_download_token(token, stored_hash):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Job public yêu cầu download token hợp lệ để dọn dẹp.",
+            )
+    else:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Cần đăng nhập để thao tác trên Job này.",
+            )
+        if str(current_user.id) != job.user_id and not current_user.is_superuser:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Bạn không có quyền thao tác trên Job này.",
+            )
 
     if job.output_key:
         try:

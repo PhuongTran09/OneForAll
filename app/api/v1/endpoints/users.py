@@ -1,7 +1,13 @@
 from fastapi import APIRouter, HTTPException, status
 
 from app.api.deps import CurrentUser, SuperuserDep
-from app.schemas.user import UserCreate, UserResponse, UserUpdate
+from app.schemas.user import (
+    UserAdminUpdate,
+    UserCreate,
+    UserProfileUpdate,
+    UserResponse,
+    UserUpdate,
+)
 from app.services.user_service import user_service
 
 router = APIRouter()
@@ -13,8 +19,8 @@ async def get_my_profile(current_user: CurrentUser):
 
 
 @router.patch("/me", response_model=UserResponse, summary="Update current user profile")
-async def update_my_profile(user_in: UserUpdate, current_user: CurrentUser):
-    return await user_service.update_user(current_user.id, user_in)
+async def update_my_profile(user_in: UserProfileUpdate, current_user: CurrentUser):
+    return await user_service.update_profile(current_user.id, user_in)
 
 
 @router.get("", response_model=list[UserResponse], summary="List all user profiles (Admin)")
@@ -50,7 +56,7 @@ async def get_user(
 @router.patch("/{user_id}", response_model=UserResponse, summary="Update user profile (Admin)")
 async def update_user(
     user_id: str,
-    user_in: UserUpdate,
+    user_in: UserAdminUpdate,
     superuser: SuperuserDep,
 ):
     return await user_service.update_user(user_id, user_in)

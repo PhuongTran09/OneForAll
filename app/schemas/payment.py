@@ -19,3 +19,4 @@ class PayOSWebhookPayload(BaseModel):
     desc: str | None = None
     success: bool | None = None
     data: dict[str, Any] = Field(default_factory=dict)
+    signature: str | None = None
