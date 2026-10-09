@@ -39,11 +39,13 @@ class Settings(BaseSettings):
             return f"https://{self.R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
         return ""
 
-    # CORS
-    BACKEND_CORS_ORIGINS: list[str] = ["*"]
+    # CORS: configure explicit trusted origins in deployment environment.
+    BACKEND_CORS_ORIGINS: list[str] = []
 
     # AI Model Settings
     BIREFNET_MODEL_NAME: str = "ZhengPeng7/BiRefNet"
+    # Must be an immutable 40-character Hugging Face commit SHA in production.
+    BIREFNET_MODEL_REVISION: str = ""
     MODEL_DEVICE: str = "cuda"  # 'cuda', 'auto', or 'cpu'
     PRELOAD_MODEL: bool = False  # Heavy model loading belongs to Celery workers.
 
