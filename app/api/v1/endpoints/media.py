@@ -10,8 +10,13 @@ from app.services.format_detector import detect_format
 from app.services.job_service import job_service
 from app.services.storage_service import storage_service
 from app.utils.download_token import generate_download_token
+from app.utils.upload_limits import max_upload_bytes, validate_upload_size
 
 router = APIRouter(tags=["Media"])
+
+AUDIO_FORMATS = {
+    "mp3", "wav", "aac", "m4a", "flac", "ogg", "oga", "opus", "wma", "aiff", "alac"
+}
 
 
 @router.post(
@@ -75,7 +80,6 @@ async def create_video_job(
     resolved_url = url
     raw_params: Any = params or options
 
-    # Hỗ trợ backward-compatibility nếu client gửi application/json
     if request.headers.get("content-type", "").startswith("application/json"):
         try:
             body = await request.json()
@@ -110,6 +114,9 @@ async def create_video_job(
             )
             or "mp4"
         )
+        category = "audio" if detected_ext.lower() in AUDIO_FORMATS else "video"
+        await validate_upload_size(file, max_upload_bytes(category), category)
+
         target_key = f"uploads/{job_id}/original.{detected_ext}"
         storage_service.upload_fileobj(
             fileobj=file.file,
@@ -123,7 +130,6 @@ async def create_video_job(
     if resolved_url in ("", "string"):
         resolved_url = None
 
-    # Nếu xử lý từ URL và không upload file trực tiếp thì không gán key từ storage
     if resolved_url and not file:
         resolved_key = None
 
@@ -138,7 +144,6 @@ async def create_video_job(
         parsed_params = raw_params
     elif isinstance(raw_params, str) and raw_params.strip() and raw_params != "string":
         try:
-            # Hỗ trợ cả trường hợp người dùng quên ngoặc nhọn JSON ví dụ '"format": "mp3"'
             trimmed = raw_params.strip()
             if not trimmed.startswith("{") and not trimmed.endswith("}") and ":" in trimmed:
                 trimmed = f"{{{trimmed}}}"
@@ -153,7 +158,6 @@ async def create_video_job(
         or parsed_params.get("title")
         or (file.filename.rsplit(".", 1)[0] if file and file.filename else None)
     )
-
     job_metadata: dict[str, Any] = {
         "operation": resolved_op,
         "url": resolved_url,
@@ -165,8 +169,6 @@ async def create_video_job(
         job_metadata["original_filename"] = file.filename
 
     user_id = str(current_user.id) if current_user else "anonymous"
-
-    # Generate download token for public/anonymous jobs
     download_token: str | None = None
     if not current_user:
         download_token, token_hash = generate_download_token()
