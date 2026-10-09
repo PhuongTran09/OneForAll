@@ -237,6 +237,15 @@ class VideoAudioProcessor(BaseProcessor):
         matching = [f for f in files if f.name.lower().endswith(f".{target_format}")]
         target_file = matching[0] if matching else files[0]
 
+        # If the Python API failed and the CLI fallback succeeded, recover the
+        # title from yt-dlp's title-based output filename.
+        if not opts.get("title") and not opts.get("filename"):
+            recovered_title = target_file.stem
+            if recovered_title:
+                opts["title"] = recovered_title
+                opts["filename"] = recovered_title
+                logger.info("Recovered title from downloaded filename: '%s'", recovered_title)
+
         # Ensure video is standard H.264 (yuv420p) to prevent black screen in browsers / players
         if not is_audio and target_format.lower() in ("mp4", "mkv"):
             codec, pix_fmt = self._probe_video_codec(target_file)
