@@ -35,8 +35,60 @@ async def create_presigned_download_url(
     request: PresignedUrlRequest,
     current_user: CurrentUserDep,
 ):
+    """Create a download URL only for objects owned by the authenticated user.
+
+    Supported layouts:
+      - uploads/{job_id}/...: original input for an owned job
+      - outputs/{job_id}/...: processed result for an owned job
+      - uploads/{user_id}/... and outputs/{user_id}/...: legacy user-scoped objects
+    """
+    key = request.key.strip("/")
+    parts = key.split("/")
+    user_id = str(current_user.id)
+
+    if len(parts) < 2 or any(part in ("", ".", "..") for part in parts):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Storage key không hợp lệ.",
+        )
+
+    prefix = parts[0]
+    repo = JobRepository()
+
+    if prefix in {"uploads", "outputs"}:
+        if len(parts) >= 2:
+            # Legacy layout: uploads/{user_id}/... or outputs/{user_id}/...
+            if parts[1] == user_id:
+                pass
+            else:
+                # Job-scoped layout: uploads/{job_id}/... or outputs/{job_id}/...
+                # Verify the job exists and belongs to the authenticated user.
+                job = await repo.get(parts[1])
+                if not job:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Không tìm thấy Job tương ứng với file.",
+                    )
+                if job.user_id != user_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Bạn không có quyền tải file thuộc Job này.",
+                    )
+
+                expected_key = job.input_key if prefix == "uploads" else job.output_key
+                if not expected_key or key != expected_key:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Storage key không khớp file được gắn với Job.",
+                    )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Chỉ cho phép tạo download URL cho object thuộc namespace được hỗ trợ.",
+        )
+
     return storage_service.create_presigned_download_url(
-        key=request.key,
+        key=key,
         expires_in=request.expires_in,
     )
 
