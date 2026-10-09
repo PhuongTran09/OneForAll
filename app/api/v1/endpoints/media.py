@@ -5,6 +5,7 @@ from uuid import uuid4
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 
 from app.api.deps import MediaAuthDep, SessionDep
+from app.core.url_validator import validate_safe_url
 from app.schemas.job import JobAccepted, JobCreate
 from app.services.format_detector import detect_format
 from app.services.job_service import job_service

@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     CELERY_PROCESS_JOB_TASK: str = "app.worker.tasks.process_job"
     CELERY_DEFAULT_QUEUE: str = "convert"
 
+    # PayOS Payment
+    PAYOS_CLIENT_ID: str = ""
+    PAYOS_API_KEY: str = ""
+    PAYOS_CHECKSUM_KEY: str = ""
+
     # Cloudflare R2 Storage
     R2_ACCOUNT_ID: str = ""
     R2_ACCESS_KEY_ID: str = ""
@@ -45,9 +50,9 @@ class Settings(BaseSettings):
     # AI Model Settings
     BIREFNET_MODEL_NAME: str = "ZhengPeng7/BiRefNet"
     # Must be an immutable 40-character Hugging Face commit SHA in production.
-    BIREFNET_MODEL_REVISION: str = ""
+    BIREFNET_MODEL_REVISION: str = "e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4"
     MODEL_DEVICE: str = "cuda"  # 'cuda', 'auto', or 'cpu'
-    PRELOAD_MODEL: bool = False  # Heavy model loading belongs to Celery workers.
+    PRELOAD_MODEL: bool = False  # Heavy model loading belongs to Celery workers. 
 
     # Upload limits (bytes). Upload middleware caps the whole multipart body;
     # endpoint validation applies stricter limits to the actual file by category.

@@ -21,12 +21,25 @@ class UserCreate(BaseModel):
     is_superuser: bool = False
 
 
-class UserUpdate(BaseModel):
+class UserProfileUpdate(BaseModel):
+    """Schema for users updating their own profile (strictly non-privileged fields)."""
+
+    username: str | None = Field(None, min_length=3, max_length=50)
+    full_name: str | None = None
+
+
+class UserAdminUpdate(BaseModel):
+    """Schema for administrators updating any user profile, including roles/status."""
+
     email: EmailStr | None = None
     username: str | None = Field(None, min_length=3, max_length=50)
     full_name: str | None = None
     is_active: bool | None = None
     is_superuser: bool | None = None
+
+
+# Backward compatibility alias
+UserUpdate = UserAdminUpdate
 
 
 class UserResponse(BaseModel):

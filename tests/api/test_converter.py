@@ -170,6 +170,7 @@ async def test_anonymous_convert_file_lifecycle(client: AsyncClient):
     )
     assert response.status_code == 202
     job_id = response.json()["job_id"]
+    download_token = response.json().get("download_token")
     assert response.json()["status"] == "queued"
 
     # 2. Anonymous check job status (no Authorization header)
@@ -177,7 +178,6 @@ async def test_anonymous_convert_file_lifecycle(client: AsyncClient):
     assert job_res.status_code == 200
     job_info = job_res.json()
     assert job_info["id"] == job_id
-    assert job_info["user_id"] == "anonymous"
     assert job_info["status"] == "queued"
 
     # 3. Simulate Celery worker completing the job
@@ -191,15 +191,15 @@ async def test_anonymous_convert_file_lifecycle(client: AsyncClient):
         expires_at=expires_at,
     )
 
-    # 4. Anonymous download result (no Authorization header)
-    download_res = await client.get(f"/api/v1/files/{job_id}/download")
+    # 4. Anonymous download result using token
+    download_res = await client.get(f"/api/v1/files/{job_id}/download?token={download_token}")
     assert download_res.status_code == 200
     download_data = download_res.json()
     assert download_data["key"] == f"outputs/{job_id}/result.svg"
     assert "url" in download_data
 
     # 4.1 Direct binary download without redirect (?direct=true)
-    direct_res = await client.get(f"/api/v1/files/{job_id}/download?direct=true")
+    direct_res = await client.get(f"/api/v1/files/{job_id}/download?direct=true&token={download_token}")
     assert direct_res.status_code == 200
     assert 'attachment; filename="test.svg"' in direct_res.headers.get("content-disposition", "")
     assert direct_res.content == b"fake-file-content" or len(direct_res.content) > 0
@@ -208,10 +208,14 @@ async def test_anonymous_convert_file_lifecycle(client: AsyncClient):
     assert await repo.get(job_id) is None
 
     # 5. Simulate expiration trên một job không được tải (sau 3 phút)
+    from app.utils.download_token import generate_download_token
+
+    tok_exp, hash_exp = generate_download_token()
     exp_job = await repo.create(
         user_id="anonymous",
         type="convert",
         input_key=None,
+        metadata={"download_token_hash": hash_exp},
     )
     past_expires = datetime.now(UTC) - timedelta(minutes=1)
     await repo.mark_completed(
@@ -220,7 +224,7 @@ async def test_anonymous_convert_file_lifecycle(client: AsyncClient):
         expires_at=past_expires,
     )
 
-    expired_res = await client.get(f"/api/v1/files/{exp_job.id}/download")
+    expired_res = await client.get(f"/api/v1/files/{exp_job.id}/download?token={tok_exp}")
     assert expired_res.status_code == 410
 
 

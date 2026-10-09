@@ -10,6 +10,11 @@ from app.core.exceptions import AppException
 from app.worker.processors.base import BaseProcessor
 
 
+MAX_RESIZE_DIMENSION: int = 8192
+MAX_IMAGE_PIXELS: int = 50_000_000
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+
+
 class ImageProcessProcessor(BaseProcessor):
     """
     Image processor handling:
@@ -44,21 +49,59 @@ class ImageProcessProcessor(BaseProcessor):
         if target_format in ("JPG", "JPEG"):
             target_format = "JPEG"
 
-        # 1. Resize operation
+        # 1. Resize operation with strict bounds checking
         if operation == "resize" or "width" in sub_opts or "height" in sub_opts:
             width = sub_opts.get("width")
             height = sub_opts.get("height")
-            if width or height:
+            if width is not None or height is not None:
+                try:
+                    w_val = int(width) if width is not None else None
+                    h_val = int(height) if height is not None else None
+                except (ValueError, TypeError) as val_err:
+                    raise AppException(status_code=400, detail="Width and height must be valid integers.") from val_err
+
+                if w_val is not None and (w_val <= 0 or w_val > MAX_RESIZE_DIMENSION):
+                    raise AppException(
+                        status_code=400,
+                        detail=f"Width must be between 1 and {MAX_RESIZE_DIMENSION} pixels.",
+                    )
+                if h_val is not None and (h_val <= 0 or h_val > MAX_RESIZE_DIMENSION):
+                    raise AppException(
+                        status_code=400,
+                        detail=f"Height must be between 1 and {MAX_RESIZE_DIMENSION} pixels.",
+                    )
+
                 orig_w, orig_h = image.size
-                new_w = int(width) if width else int(orig_w * (int(height) / orig_h))
-                new_h = int(height) if height else int(orig_h * (int(width) / orig_w))
+                new_w = w_val if w_val else int(orig_w * (h_val / orig_h))
+                new_h = h_val if h_val else int(orig_h * (w_val / orig_w))
+
+                if new_w > MAX_RESIZE_DIMENSION or new_h > MAX_RESIZE_DIMENSION or new_w <= 0 or new_h <= 0:
+                    raise AppException(
+                        status_code=400,
+                        detail=f"Calculated dimensions exceed maximum allowed {MAX_RESIZE_DIMENSION} pixels.",
+                    )
+
                 image = image.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-        # 2. Crop operation
+        # 2. Crop operation with coordinate validation
         if operation == "crop" and "box" in sub_opts:
             box = sub_opts["box"]  # (left, upper, right, lower)
-            if isinstance(box, list | tuple) and len(box) == 4:
-                image = image.crop((int(box[0]), int(box[1]), int(box[2]), int(box[3])))
+            if not isinstance(box, (list, tuple)) or len(box) != 4:
+                raise AppException(
+                    status_code=400,
+                    detail="Crop box must be a list/tuple of 4 coordinates [left, upper, right, lower].",
+                )
+            try:
+                coords = [int(c) for c in box]
+            except (ValueError, TypeError) as exc:
+                raise AppException(status_code=400, detail="Crop box coordinates must be integers.") from exc
+
+            if coords[0] < 0 or coords[1] < 0 or coords[2] <= coords[0] or coords[3] <= coords[1]:
+                raise AppException(
+                    status_code=400,
+                    detail="Invalid crop box coordinates (left < right and upper < lower).",
+                )
+            image = image.crop((coords[0], coords[1], coords[2], coords[3]))
 
         # 3. Format & Compress output directly to disk
         quality = int(sub_opts.get("quality", 85))
