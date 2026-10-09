@@ -39,8 +39,8 @@ class Settings(BaseSettings):
             return f"https://{self.R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
         return ""
 
-    # CORS: configure explicit trusted origins in deployment environment.
-    BACKEND_CORS_ORIGINS: list[str] = []
+    # CORS
+    BACKEND_CORS_ORIGINS: list[str] = ["*"]
 
     # AI Model Settings
     BIREFNET_MODEL_NAME: str = "ZhengPeng7/BiRefNet"
